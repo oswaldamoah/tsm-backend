@@ -37,6 +37,9 @@ class SiteCreate(BaseModel):
     location: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    googleMapsUrl: Optional[str] = None
+    images: Optional[str] = None
+    notes: Optional[str] = None
     isArchived: Optional[bool] = False
 
 
@@ -49,6 +52,9 @@ class SiteUpdate(BaseModel):
     location: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    googleMapsUrl: Optional[str] = None
+    images: Optional[str] = None
+    notes: Optional[str] = None
     isArchived: Optional[bool] = None
 
 
@@ -146,6 +152,9 @@ def serialize_site(site: Site) -> dict:
         "location": site.location,
         "latitude": site.latitude,
         "longitude": site.longitude,
+        "googleMapsUrl": site.google_maps_url,
+        "images": site.images,
+        "notes": site.notes,
         "isArchived": site.is_archived,
         "createdAt": site.created_at.isoformat() if site.created_at else None,
         "updatedAt": site.updated_at.isoformat() if site.updated_at else None,
@@ -195,6 +204,9 @@ def create_site(site_data: SiteCreate, db: Session = Depends(get_db)):
             location=site_data.location,
             latitude=site_data.latitude,
             longitude=site_data.longitude,
+            google_maps_url=site_data.googleMapsUrl,
+            images=site_data.images,
+            notes=site_data.notes,
             is_archived=site_data.isArchived or False,
         )
         db.add(new_site)
@@ -233,6 +245,9 @@ def update_site(site_id: str, site_data: SiteUpdate, db: Session = Depends(get_d
             "location": "location",
             "latitude": "latitude",
             "longitude": "longitude",
+            "googleMapsUrl": "google_maps_url",
+            "images": "images",
+            "notes": "notes",
             "isArchived": "is_archived",
         }
 

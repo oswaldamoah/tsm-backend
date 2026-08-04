@@ -16,13 +16,16 @@ class Site(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, nullable=False)
 
-    # New optional fields
+    # Site Info / About fields
     site_code = Column(String(100), nullable=True)          # Generated but can be edited
     site_type = Column(String(50), nullable=True)           # 4G, 5G, Fiber, etc.
     region = Column(String(255), nullable=True)             # Location/region
     location = Column(String(255), nullable=True)           # Detailed location
     latitude = Column(Float, nullable=True)                 # GPS coordinates
     longitude = Column(Float, nullable=True)                # GPS coordinates
+    google_maps_url = Column(Text, nullable=True)           # Google Maps link
+    images = Column(Text, nullable=True)                    # JSON array of image URLs
+    notes = Column(Text, nullable=True)                     # Site notes / comments
     is_archived = Column(Boolean, default=False)            # Allow archive inactive sites
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -127,15 +127,18 @@ Base URL: `https://your-app.onrender.com` (or `http://localhost:8000` locally)
 
 ```json
 {
-  "name": "Kumasi Tower 3",           // required
-  "laborCost": 5000.0,                 // optional, default 0
-  "siteCode": "TEL-KMAS-AB12",         // optional, auto-generated if omitted
-  "siteType": "4G",                    // optional
-  "region": "Ashanti",                 // optional
-  "location": "Adum, Kumasi",          // optional
-  "latitude": 6.6851,                  // optional
-  "longitude": -1.6218,                // optional
-  "isArchived": false                  // optional, default false
+  "name": "Kumasi Tower 3",                // required
+  "laborCost": 5000.0,                     // optional, default 0
+  "siteCode": "TEL-KMAS-AB12",             // optional, auto-generated if omitted
+  "siteType": "4G",                        // optional — 4G, 5G, Fiber, etc.
+  "region": "Ashanti",                     // optional — location/region
+  "location": "Adum, Kumasi",              // optional — detailed location
+  "latitude": 6.6851,                      // optional — GPS coordinates
+  "longitude": -1.6218,                    // optional — GPS coordinates
+  "googleMapsUrl": "https://maps.google.com/?q=6.6851,-1.6218",  // optional — Google Maps link
+  "images": "[\"https://example.com/img1.jpg\",\"https://example.com/img2.jpg\"]",  // optional — JSON array of image URLs
+  "notes": "Site has backup generator. Access via Adum main road.",  // optional — site notes
+  "isArchived": false                      // optional, default false
 }
 ```
 
@@ -156,6 +159,9 @@ A site response includes **everything nested**:
   "location": "Adum, Kumasi",
   "latitude": 6.6851,
   "longitude": -1.6218,
+  "googleMapsUrl": "https://maps.google.com/?q=6.6851,-1.6218",
+  "images": "[\"https://example.com/img1.jpg\",\"https://example.com/img2.jpg\"]",
+  "notes": "Site has backup generator. Access via Adum main road.",
   "isArchived": false,
   "createdAt": "2026-08-01T12:00:00+00:00",
   "updatedAt": "2026-08-01T12:00:00+00:00",

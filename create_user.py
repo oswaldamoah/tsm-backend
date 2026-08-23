@@ -14,14 +14,16 @@ if not NEON_DATABASE_URL:
     print("❌ Error: 'DATABASE_URL' not found in your environment or .env file.")
     sys.exit(1)
 
-# 2. Collect Inputs
+# 2. Collect Inputs (Double check the order here!)
 username = input("Enter username: ")
 email = input("Enter email: ")
 password = input("Enter password: ")
-role = input("Enter role (manager/admin) [default: manager]: ") or "manager"
-role = role.strip().upper()
+
+role = input("Enter role (MANAGER/ADMIN) [default: MANAGER]: ") or "MANAGER"
+role = role.strip().upper()  # Fixes the ENUM issue by forcing uppercase
 
 # 3. Hash Password using pure bcrypt
+# We explicitly target the 'password' variable here
 password_bytes = password.encode('utf-8')
 salt = bcrypt.gensalt(rounds=12)
 hashed_password = bcrypt.hashpw(password_bytes, salt).decode('utf-8')

@@ -39,16 +39,15 @@ def get_db():
 def migrate_schema():
     """
     Run ALTER TABLE statements to add new columns to existing tables
-    for the Neon PostgreSQL database. Each column is added only if it
-    doesn't already exist (PostgreSQL does not support IF NOT EXISTS
-    for ADD COLUMN in older versions, so we check information_schema).
+    for both PostgreSQL and SQLite databases.
     """
     from sqlalchemy.inspection import inspect
 
     inspector = inspect(engine)
     existing_columns = {}
+    is_sqlite = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
 
-    for table_name in ["sites", "activities", "company_settings"]:
+    for table_name in ["sites", "activities", "company_settings", "users"]:
         try:
             existing_columns[table_name] = {
                 col["name"] for col in inspector.get_columns(table_name)
@@ -59,41 +58,91 @@ def migrate_schema():
 
     with engine.begin() as conn:
         # --- SITES table additions ---
-        site_additions = {
-            "site_code": "VARCHAR(100)",
-            "site_type": "VARCHAR(50)",
-            "region": "VARCHAR(255)",
-            "location": "VARCHAR(255)",
-            "latitude": "DOUBLE PRECISION",
-            "longitude": "DOUBLE PRECISION",
-            "google_maps_url": "TEXT",
-            "images": "TEXT",
-            "notes": "TEXT",
-            "is_archived": "BOOLEAN DEFAULT FALSE",
-            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        }
+        if is_sqlite:
+            site_additions = {
+                "site_code": "VARCHAR(100)",
+                "site_type": "VARCHAR(50)",
+                "region": "VARCHAR(255)",
+                "location": "VARCHAR(255)",
+                "latitude": "REAL",
+                "longitude": "REAL",
+                "google_maps_url": "TEXT",
+                "images": "TEXT",
+                "notes": "TEXT",
+                "is_archived": "BOOLEAN DEFAULT 0",
+                "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+            }
+        else:
+            site_additions = {
+                "site_code": "VARCHAR(100)",
+                "site_type": "VARCHAR(50)",
+                "region": "VARCHAR(255)",
+                "location": "VARCHAR(255)",
+                "latitude": "DOUBLE PRECISION",
+                "longitude": "DOUBLE PRECISION",
+                "google_maps_url": "TEXT",
+                "images": "TEXT",
+                "notes": "TEXT",
+                "is_archived": "BOOLEAN DEFAULT FALSE",
+                "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            }
         for col_name, col_def in site_additions.items():
             if col_name not in existing_columns.get("sites", set()):
                 conn.execute(text(f'ALTER TABLE sites ADD COLUMN "{col_name}" {col_def}'))
                 print(f"✅ Added column sites.{col_name}")
 
         # --- ACTIVITIES table additions ---
-        activity_additions = {
-            "activity_date": "TIMESTAMP",
-            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        }
+        if is_sqlite:
+            activity_additions = {
+                "activity_date": "DATETIME",
+                "completed_at": "DATETIME",
+                "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+            }
+        else:
+            activity_additions = {
+                "activity_date": "TIMESTAMP",
+                "completed_at": "TIMESTAMP",
+                "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            }
         for col_name, col_def in activity_additions.items():
             if col_name not in existing_columns.get("activities", set()):
                 conn.execute(text(f'ALTER TABLE activities ADD COLUMN "{col_name}" {col_def}'))
                 print(f"✅ Added column activities.{col_name}")
+
+        # --- USERS table additions ---
+        if is_sqlite:
+            user_additions = {
+                "username": "VARCHAR(100) UNIQUE NOT NULL",
+                "email": "VARCHAR(255) UNIQUE",
+                "hashed_password": "VARCHAR(255) NOT NULL",
+                "role": "VARCHAR(20) DEFAULT 'manager'",
+                "is_active": "BOOLEAN DEFAULT 1",
+                "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+            }
+        else:
+            user_additions = {
+                "username": "VARCHAR(100) UNIQUE NOT NULL",
+                "email": "VARCHAR(255) UNIQUE",
+                "hashed_password": "VARCHAR(255) NOT NULL",
+                "role": "VARCHAR(20) DEFAULT 'manager'",
+                "is_active": "BOOLEAN DEFAULT TRUE",
+                "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            }
+        for col_name, col_def in user_additions.items():
+            if col_name not in existing_columns.get("users", set()):
+                conn.execute(text(f'ALTER TABLE users ADD COLUMN "{col_name}" {col_def}'))
+                print(f"✅ Added column users.{col_name}")
 
 
 def init_db():
     """Create all tables and run migrations."""
     import models  # noqa: F401 - ensures models are registered with Base
     Base.metadata.create_all(bind=engine)
-    if not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-        migrate_schema()
-    print("✅ Database initialized (tables + migrations complete)")
+    migrate_schema()
+    print("[OK] Database initialized (tables + migrations complete)")

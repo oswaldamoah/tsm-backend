@@ -1,4 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -7,13 +10,29 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, Base, engine, get_db, init_db
-from models import Site, Material, Activity, OperationalCost, CompanySetting
+from models import Site, Material, Activity, OperationalCost, CompanySetting, User, UserRole
+from auth import (
+    create_access_token,
+    authenticate_user,
+    get_current_active_user,
+    require_role,
+    seed_default_users,
+    oauth2_scheme,
+    Token,
+)
 import uuid
 import random
 import string
 
 # ========== INIT DB ==========
 init_db()
+
+# Seed default users
+db = SessionLocal()
+try:
+    seed_default_users(db)
+finally:
+    db.close()
 
 app = FastAPI(title="Telecom Site Backend", version="2.0.0")
 
@@ -69,12 +88,14 @@ class ActivityCreate(BaseModel):
     name: str
     completed: Optional[bool] = False
     activityDate: Optional[datetime] = None
+    completedAt: Optional[datetime] = None
 
 
 class ActivityUpdate(BaseModel):
     name: Optional[str] = None
     completed: Optional[bool] = None
     activityDate: Optional[datetime] = None
+    completedAt: Optional[datetime] = None
 
 
 class OperationalCostCreate(BaseModel):
@@ -124,6 +145,7 @@ def serialize_activity(a: Activity) -> dict:
         "id": a.id,
         "name": a.name,
         "completed": a.completed,
+        "completedAt": a.completed_at.isoformat() if a.completed_at else None,
         "activityDate": a.activity_date.isoformat() if a.activity_date else None,
     }
 
@@ -172,6 +194,30 @@ def health():
     return {"message": "✅ Telecom Site Backend is running!"}
 
 
+# ========== AUTH ROUTES ==========
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login", response_model=Token)
+def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+    user = authenticate_user(db, login_data.username, login_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    access_token = create_access_token(data={"sub": user.username, "role": user.role})
+    return Token(access_token=access_token, username=user.username, role=user.role)
+
+
+@app.get("/auth/me", response_model=Token)
+def get_current_user_info(current_user=Depends(get_current_active_user)):
+    return Token(
+        access_token="",
+        username=current_user.username,
+        role=current_user.role,
+    )
 # ========== SITE ROUTES ==========
 
 
@@ -192,7 +238,7 @@ def get_sites(
 
 
 @app.post("/sites", status_code=201)
-def create_site(site_data: SiteCreate, db: Session = Depends(get_db)):
+def create_site(site_data: SiteCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     try:
         new_site = Site(
             id=str(uuid.uuid4()),
@@ -228,7 +274,7 @@ def get_site(site_id: str, db: Session = Depends(get_db)):
 
 
 @app.put("/sites/{site_id}")
-def update_site(site_id: str, site_data: SiteUpdate, db: Session = Depends(get_db)):
+def update_site(site_id: str, site_data: SiteUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     try:
         site = db.query(Site).filter(Site.id == site_id).first()
         if not site:
@@ -266,7 +312,7 @@ def update_site(site_id: str, site_data: SiteUpdate, db: Session = Depends(get_d
 
 
 @app.delete("/sites/{site_id}")
-def delete_site(site_id: str, db: Session = Depends(get_db)):
+def delete_site(site_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -277,7 +323,7 @@ def delete_site(site_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/sites/{site_id}/archive")
-def archive_site(site_id: str, db: Session = Depends(get_db)):
+def archive_site(site_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -288,7 +334,7 @@ def archive_site(site_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/sites/{site_id}/unarchive")
-def unarchive_site(site_id: str, db: Session = Depends(get_db)):
+def unarchive_site(site_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -302,7 +348,7 @@ def unarchive_site(site_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/sites/{site_id}/materials", status_code=201)
-def add_material(site_id: str, material_data: MaterialCreate, db: Session = Depends(get_db)):
+def add_material(site_id: str, material_data: MaterialCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -322,7 +368,7 @@ def add_material(site_id: str, material_data: MaterialCreate, db: Session = Depe
 
 
 @app.delete("/sites/{site_id}/materials/{material_id}")
-def delete_material(site_id: str, material_id: str, db: Session = Depends(get_db)):
+def delete_material(site_id: str, material_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     material = db.query(Material).filter(Material.id == material_id, Material.site_id == site_id).first()
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
@@ -336,7 +382,7 @@ def delete_material(site_id: str, material_id: str, db: Session = Depends(get_db
 
 
 @app.post("/sites/{site_id}/activities", status_code=201)
-def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depends(get_db)):
+def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -346,6 +392,7 @@ def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depe
         name=activity_data.name,
         completed=activity_data.completed or False,
         activity_date=activity_data.activityDate,
+        completed_at=activity_data.completedAt or (datetime.now(timezone.utc) if activity_data.completed else None),
         site_id=site.id,
     )
     db.add(new_activity)
@@ -355,7 +402,7 @@ def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depe
 
 
 @app.patch("/sites/{site_id}/activities/{activity_id}")
-def update_activity(site_id: str, activity_id: str, activity_data: ActivityUpdate, db: Session = Depends(get_db)):
+def update_activity(site_id: str, activity_id: str, activity_data: ActivityUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     activity = db.query(Activity).filter(Activity.id == activity_id, Activity.site_id == site_id).first()
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -364,7 +411,15 @@ def update_activity(site_id: str, activity_id: str, activity_data: ActivityUpdat
     if "name" in data:
         activity.name = data["name"]
     if "completed" in data:
+        was_completed = activity.completed
         activity.completed = data["completed"]
+        # Auto-set completed_at when marking complete; clear when un-completing
+        if data["completed"] and not was_completed and "completedAt" not in data:
+            activity.completed_at = datetime.now(timezone.utc)
+        elif not data["completed"]:
+            activity.completed_at = None
+    if "completedAt" in data:
+        activity.completed_at = data["completedAt"]
     if "activityDate" in data:
         activity.activity_date = data["activityDate"]
 
@@ -374,7 +429,7 @@ def update_activity(site_id: str, activity_id: str, activity_data: ActivityUpdat
 
 
 @app.delete("/sites/{site_id}/activities/{activity_id}")
-def delete_activity(site_id: str, activity_id: str, db: Session = Depends(get_db)):
+def delete_activity(site_id: str, activity_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     activity = db.query(Activity).filter(Activity.id == activity_id, Activity.site_id == site_id).first()
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -388,7 +443,7 @@ def delete_activity(site_id: str, activity_id: str, db: Session = Depends(get_db
 
 
 @app.post("/sites/{site_id}/operational-costs", status_code=201)
-def add_operational_cost(site_id: str, oc_data: OperationalCostCreate, db: Session = Depends(get_db)):
+def add_operational_cost(site_id: str, oc_data: OperationalCostCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -406,7 +461,7 @@ def add_operational_cost(site_id: str, oc_data: OperationalCostCreate, db: Sessi
 
 
 @app.delete("/sites/{site_id}/operational-costs/{operational_cost_id}")
-def delete_operational_cost(site_id: str, operational_cost_id: str, db: Session = Depends(get_db)):
+def delete_operational_cost(site_id: str, operational_cost_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     oc = db.query(OperationalCost).filter(OperationalCost.id == operational_cost_id, OperationalCost.site_id == site_id).first()
     if not oc:
         raise HTTPException(status_code=404, detail="Operational cost not found")
@@ -445,7 +500,7 @@ def get_company_settings(db: Session = Depends(get_db)):
 
 
 @app.put("/company-settings")
-def update_company_settings(settings_data: CompanySettingsUpdate, db: Session = Depends(get_db)):
+def update_company_settings(settings_data: CompanySettingsUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     settings = db.query(CompanySetting).filter(CompanySetting.id == "company").first()
     if not settings:
         settings = CompanySetting(id="company")

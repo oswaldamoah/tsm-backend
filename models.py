@@ -1,13 +1,32 @@
-from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, DateTime, Text
+from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, DateTime, Text, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
 import uuid
+import enum
 
 
 def generate_uuid():
     """Generate a UUID string for primary keys."""
     return str(uuid.uuid4())
+
+
+class UserRole(str, enum.Enum):
+    ADMIN = "admin"
+    MANAGER = "manager"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=True, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(SQLEnum(UserRole), default=UserRole.MANAGER, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Site(Base):
@@ -56,6 +75,7 @@ class Activity(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String)
     completed = Column(Boolean, default=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)  # When activity was completed
 
     # New: Dates when creating activities
     activity_date = Column(DateTime(timezone=True), nullable=True)

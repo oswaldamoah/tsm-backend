@@ -22,9 +22,10 @@ SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-# ── Password hashing (bcrypt) ──────────────────────────────────────────────────
+# ── Password hashing (bcrypt_sha256) ───────────────────────────────────────────
+# bcrypt_sha256 pre-hashes with SHA-256, avoiding bcrypt's 72-byte input limit.
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 # ── Security schemes ───────────────────────────────────────────────────────────
 

@@ -22,10 +22,15 @@ SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-# ── Password hashing (bcrypt_sha256) ───────────────────────────────────────────
-# bcrypt_sha256 pre-hashes with SHA-256, avoiding bcrypt's 72-byte input limit.
-
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+# ── Password hashing ───────────────────────────────────────────────────────────
+# bcrypt_sha256 pre-hashes with SHA-256, avoiding bcrypt's 72-byte input limit
+# (ValueError: password cannot be longer than 72 bytes). Plain "bcrypt" is kept
+# as a legacy scheme so existing $2b$ hashes continue to verify; new hashes use
+# bcrypt_sha256.
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256", "bcrypt"],
+    deprecated="auto",
+)
 
 # ── Security schemes ───────────────────────────────────────────────────────────
 

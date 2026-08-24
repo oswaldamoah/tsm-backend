@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -24,17 +25,25 @@ import uuid
 import random
 import string
 
-# ========== INIT DB ==========
-init_db()
 
-# Seed default users
-db = SessionLocal()
-try:
-    seed_default_users(db)
-finally:
-    db.close()
+# ========== LIFESPAN (async startup/shutdown) ==========
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: run DB init & seeding in background so we don't block the event loop
+    import asyncio
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, init_db)
+    # Seed default users
+    db = SessionLocal()
+    try:
+        seed_default_users(db)
+    finally:
+        db.close()
+    yield
+    # Shutdown: nothing special needed
 
-app = FastAPI(title="Telecom Site Backend", version="2.0.0")
+
+app = FastAPI(title="Telecom Site Backend", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -217,11 +217,22 @@ class LoginRequest(BaseModel):
 
 @app.post("/auth/login", response_model=Token)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+    print(f"[DEBUG] Login attempt: username={login_data.username}")
     user = authenticate_user(db, login_data.username, login_data.password)
+    print(f"[DEBUG] Authenticate result: {user}")
     if not user:
+        print("[DEBUG] Invalid credentials")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    access_token = create_access_token(data={"sub": user.username, "role": user.role})
-    return Token(access_token=access_token, username=user.username, role=user.role)
+    print(f"[DEBUG] User found: {user.username}, role: {user.role}")
+    try:
+        access_token = create_access_token(data={"sub": user.username, "role": user.role})
+        print(f"[DEBUG] Token created successfully")
+        return Token(access_token=access_token, username=user.username, role=user.role)
+    except Exception as e:
+        print(f"[ERROR] Token creation failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Token creation failed: {e}")
 
 
 @app.get("/auth/me", response_model=Token)

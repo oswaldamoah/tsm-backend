@@ -257,13 +257,11 @@ def seed_default_users(db: Session):
                 from models import UserRole
                 user.role = UserRole(role)
                 user.is_active = True
-                # Reset hash if unrecognized format
-                if not user.hashed_password.startswith(_RECOGNIZED_PREFIXES):
-                    print(
-                        f"[WARN] User '{username}' has unrecognized hash "
-                        f"({user.hashed_password[:20]}...) - resetting"
-                    )
-                    user.hashed_password = get_password_hash(default_password)
+                # ALWAYS reset hash for canonical default users to ensure
+                # correct default passwords (admin123, manager123).
+                # This overwrites any legacy password from create_user.py.
+                print(f"[INFO] Resetting password for default user '{username}'")
+                user.hashed_password = get_password_hash(default_password)
                 db.commit()
                 return
 

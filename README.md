@@ -279,10 +279,181 @@ Interactive API docs (Swagger UI) at **`http://localhost:8000/docs`** — great 
 
 ---
 
+## 🔐 Authentication
+
+The API supports **two authentication methods**:
+
+| Method | Use Case | Header Format |
+|--------|----------|---------------|
+| **JWT (username/password)** | Frontend login, user sessions | `Authorization: Bearer <jwt_token>` |
+| **API Key** | Server-to-server, scripts, CI/CD | `Authorization: Bearer <tsk_...>` |
+
+Both arrive via the same `Authorization: Bearer <token>` header — the backend detects which type by the token prefix.
+
+### Default Seeded Users
+
+On first startup (or when the `users` table is empty), the app automatically creates two users:
+
+| Username | Password | Role | Capabilities |
+|----------|----------|------|--------------|
+| `admin` | `admin123` | `admin` | Full access — all endpoints + user management |
+| `manager` | `manager123` | `manager` | Read/write sites, materials, activities, costs |
+
+> ⚠️ **Change these passwords in production!** They're seeded for convenience only.
+
+### Login (Get JWT Token)
+
+```bash
+POST /auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+**Response (200):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "username": "admin",
+  "role": "admin"
+}
+```
+
+**Errors:**
+- `401 Invalid credentials` — wrong username/password
+
+### Using the JWT Token
+
+Include the token in subsequent requests:
+
+```bash
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+**Token expiry:** 7 days (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES` in `auth.py`).
+
+### Role-Based Access
+
+| Role | Can Access |
+|------|------------|
+| `admin` | All endpoints (future: user management, settings) |
+| `manager` | All site/material/activity/cost CRUD, company settings |
+
+Endpoints requiring auth use `Depends(get_current_active_user)` — returns `401` if missing/invalid, `403` if role insufficient.
+
+### API Keys (Server-to-Server)
+
+For automated access (CI/CD, scripts, external services), use the preconfigured API key:
+
+```bash
+Authorization: Bearer tsk_v7AcKSzC6Pe0caTyVuZk2FluUha_4CoBNDjRj1SHeZE
+```
+
+**Configure in `.env`:**
+```env
+VALID_API_KEYS=tsk_v7AcKSzC6Pe0caTyVuZk2FluUha_4CoBNDjRj1SHeZE
+```
+Comma-separate multiple keys. API keys have **admin-equivalent access**.
+
+### Adding Custom Users (Manual)
+
+Since there's no self-registration endpoint, **you control who gets access** by inserting directly into the database:
+
+```python
+# One-off script (run locally or in a shell)
+from database import SessionLocal
+from auth import create_user
+
+db = SessionLocal()
+create_user(db, "your_username", "you@example.com", "your_secure_password", "manager")
+# role can be "admin" or "manager"
+db.close()
+```
+
+Or via raw SQL (e.g., Neon dashboard, `psql`, DBeaver):
+
+```sql
+-- Password must be bcrypt-hashed. Generate hash first:
+-- python -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('your_password'))"
+
+INSERT INTO users (id, username, email, hashed_password, role, is_active, created_at, updated_at)
+VALUES (
+  gen_random_uuid(),
+  'your_username',
+  'you@example.com',
+  '$2b$12$...hashed_password_here...',
+  'manager',
+  true,
+  now(),
+  now()
+);
+```
+
+> ✅ **Only you can add users** — no public registration, no forgot-password flow. Full control.
+
+### Frontend Login Page Example
+
+```jsx
+// React example
+const login = async (username, password) => {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Login failed');
+  }
+  
+  const { access_token, username, role } = await res.json();
+  
+  // Store token (localStorage, httpOnly cookie, context, etc.)
+  localStorage.setItem('auth_token', access_token);
+  localStorage.setItem('user_role', role);
+  localStorage.setItem('username', username);
+  
+  return { access_token, username, role };
+};
+
+// Authenticated fetch helper
+const authFetch = (url, options = {}) => {
+  const token = localStorage.getItem('auth_token');
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  });
+};
+
+// Usage
+const sites = await authFetch(`${API_BASE}/sites`).then(r => r.json());
+```
+
+### Logout
+
+Client-side only — delete the stored token:
+
+```js
+localStorage.removeItem('auth_token');
+localStorage.removeItem('user_role');
+localStorage.removeItem('username');
+```
+
+---
+
 ## 🗄️ Database
 
 - **Cloud (production):** PostgreSQL via Neon — connection string in `.env`.
 - **Local fallback:** SQLite at `telecom_sites.db` if `DATABASE_URL` is missing.
 - **Migrations:** Tables are created automatically on startup (`Base.metadata.create_all`) and missing columns are added via `migrate_schema()` for PostgreSQL. No manual migration steps needed.
 
-**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`
+**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`

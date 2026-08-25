@@ -10,7 +10,6 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -23,14 +22,18 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 # ── Password hashing ───────────────────────────────────────────────────────────
-# bcrypt_sha256 pre-hashes with SHA-256, avoiding bcrypt's 72-byte input limit
-# (ValueError: password cannot be longer than 72 bytes). Plain "bcrypt" is kept
-# as a legacy scheme so existing $2b$ hashes continue to verify; new hashes use
-# bcrypt_sha256.
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "bcrypt"],
-    deprecated="auto",
-)
+# PURE-STDLIB PBKDF2-HMAC-SHA256. No passlib, no bcrypt required for hashing —
+# immune to the passlib/bcrypt>=4.1 incompatibility that crashes worker boot
+# ("password cannot be longer than 72 bytes"). Legacy bcrypt hashes ($2b$...)
+# are still verified via the pinned bcrypt library inside a try/except, so
+# existing users keep working.
+import base64
+import hashlib
+import hmac as hmac_mod
+
+_PBKDF2_ITERATIONS = 480_000  # OWASP-recommended minimum for PBKDF2-SHA256
+_BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
+_RECOGNIZED_PREFIXES = _BCRYPT_PREFIXES + ("pbkdf2_sha256$",)
 
 # ── Security schemes ───────────────────────────────────────────────────────────
 
@@ -59,12 +62,50 @@ class UserResponse(BaseModel):
 # ── Utility functions ──────────────────────────────────────────────────────────
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash with PBKDF2-HMAC-SHA256 (stdlib only). Format:
+    pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>"""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return (
+        f"pbkdf2_sha256${_PBKDF2_ITERATIONS}"
+        f"${base64.b64encode(salt).decode('ascii')}"
+        f"${base64.b64encode(dk).decode('ascii')}"
+    )
+
+
+def _verify_pbkdf2(password: str, hashed: str) -> bool:
+    try:
+        _, iterations, salt_b64, hash_b64 = hashed.split("$")
+        dk = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            base64.b64decode(salt_b64),
+            int(iterations),
+        )
+        return hmac_mod.compare_digest(dk, base64.b64decode(hash_b64))
+    except Exception:
+        return False
+
+
+def _verify_legacy_bcrypt(password: str, hashed: str) -> bool:
+    # bcrypt silently truncated at 72 bytes historically; replicate that so
+    # long inputs can't raise ValueError on modern bcrypt versions.
+    try:
+        import bcrypt  # pinned ==4.0.1 in requirements.txt (legacy verify only)
+        return bcrypt.checkpw(password.encode("utf-8")[:72], hashed.encode("ascii"))
+    except Exception:
+        return False
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
+    if hashed_password.startswith("pbkdf2_sha256$"):
+        return _verify_pbkdf2(plain_password, hashed_password)
+    if hashed_password.startswith(_BCRYPT_PREFIXES):
+        return _verify_legacy_bcrypt(plain_password, hashed_password)
+    return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -186,12 +227,54 @@ def create_user(db: Session, username: str, email: str, password: str, role: str
 
 
 def seed_default_users(db: Session):
-    admin = get_user_by_username(db, "admin")
-    if not admin:
-        create_user(db, "admin", "admin@tsm.local", "admin123", "admin")
-        print("[OK] Created admin user")
-    manager = get_user_by_username(db, "manager")
-    if not manager:
-        create_user(db, "manager", "manager@tsm.local", "manager123", "manager")
-        print("[OK] Created manager user")
-    db.commit()
+    """Seed admin & manager users — NEVER crashes startup. Handles:
+    - username already exists (normal case)
+    - email already exists on a DIFFERENT username (create_user.py legacy data)
+    - unrecognized hash formats (reset to default)
+    - any other DB error (log & continue)"""
+    from models import User
+
+    def _upsert_user(username: str, email: str, default_password: str, role: str):
+        """Find by username OR email. If found, ensure correct password/hash.
+        If neither exists, create fresh. Any error is caught & logged."""
+        try:
+            # First check by username
+            user = db.query(User).filter(User.username == username).first()
+            # If not found, check if email is taken by another account
+            if not user:
+                user = db.query(User).filter(User.email == email).first()
+                if user and user.username != username:
+                    # Legacy collision: same email, different username.
+                    # Adopt this account as the canonical one.
+                    print(
+                        f"[INFO] Adopting existing user '{user.username}' "
+                        f"(email={email}) as '{username}'"
+                    )
+                    user.username = username
+
+            if user:
+                # Ensure role & active status
+                from models import UserRole
+                user.role = UserRole(role)
+                user.is_active = True
+                # Reset hash if unrecognized format
+                if not user.hashed_password.startswith(_RECOGNIZED_PREFIXES):
+                    print(
+                        f"[WARN] User '{username}' has unrecognized hash "
+                        f"({user.hashed_password[:20]}...) - resetting"
+                    )
+                    user.hashed_password = get_password_hash(default_password)
+                db.commit()
+                return
+
+            # Brand new user
+            create_user(db, username, email, default_password, role)
+            print(f"[OK] Created {username} user")
+        except Exception as e:
+            # Never let seeding kill the server
+            db.rollback()
+            print(f"[ERROR] Seeding {username}: {type(e).__name__}: {e}")
+
+    # Per-user isolation — one failure never blocks the other
+    _upsert_user("admin", "admin@tsm.local", "admin123", "admin")
+    _upsert_user("manager", "manager@tsm.local", "manager123", "manager")

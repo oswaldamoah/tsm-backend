@@ -458,4 +458,5 @@ localStorage.removeItem('username');
 
 **Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`#   T r i g g e r   d e p l o y  
  t r i g g e r   d e p l o y   0 8 / 2 6 / 2 0 2 6   0 4 : 3 7 : 5 1  
+ f o r c e   d e p l o y   0 8 / 2 6 / 2 0 2 6   0 5 : 3 7 : 0 6  
  

@@ -584,3 +584,5 @@ if __name__ == "__main__":
     reload = os.environ.get("ENV", "development").lower() == "development"
 
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=reload)
+#   D e p l o y   t e s t  
+ 

@@ -217,36 +217,11 @@ class LoginRequest(BaseModel):
 
 @app.post("/auth/login", response_model=Token)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
-    import os
-    print(f"[DEBUG] Login attempt: username={login_data.username}")
-    print(f"[DEBUG] SECRET_KEY set: {bool(os.environ.get('SECRET_KEY'))}")
-    print(f"[DEBUG] SECRET_KEY len: {len(os.environ.get('SECRET_KEY', ''))}")
     user = authenticate_user(db, login_data.username, login_data.password)
-    print(f"[DEBUG] Authenticate result: {user}")
     if not user:
-        print("[DEBUG] Invalid credentials")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    print(f"[DEBUG] User found: {user.username}, role: {user.role}")
-    try:
-        access_token = create_access_token(data={"sub": user.username, "role": user.role})
-        print(f"[DEBUG] Token created successfully")
-        return Token(access_token=access_token, username=user.username, role=user.role)
-    except Exception as e:
-        print(f"[ERROR] Token creation failed: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Token creation failed: {e}")
-
-
-@app.get("/debug/secret")
-def debug_secret():
-    import os
-    sk = os.environ.get("SECRET_KEY")
-    return {
-        "secret_key_set": bool(sk),
-        "secret_key_length": len(sk) if sk else 0,
-        "secret_key_prefix": sk[:10] if sk else None,
-    }
+    access_token = create_access_token(data={"sub": user.username, "role": user.role})
+    return Token(access_token=access_token, username=user.username, role=user.role)
 
 
 @app.get("/auth/me", response_model=Token)

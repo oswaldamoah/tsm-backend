@@ -456,4 +456,5 @@ localStorage.removeItem('username');
 - **Local fallback:** SQLite at `telecom_sites.db` if `DATABASE_URL` is missing.
 - **Migrations:** Tables are created automatically on startup (`Base.metadata.create_all`) and missing columns are added via `migrate_schema()` for PostgreSQL. No manual migration steps needed.
 
-**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`
+**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`#   T r i g g e r   d e p l o y  
+ 

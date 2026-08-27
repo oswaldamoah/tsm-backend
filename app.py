@@ -73,6 +73,7 @@ class SiteCreate(BaseModel):
     images: Optional[str] = None
     notes: Optional[str] = None
     isArchived: Optional[bool] = False
+    createdAt: Optional[datetime] = None  # Editable creation date (defaults to now if omitted)
 
 
 class SiteUpdate(BaseModel):
@@ -88,6 +89,7 @@ class SiteUpdate(BaseModel):
     images: Optional[str] = None
     notes: Optional[str] = None
     isArchived: Optional[bool] = None
+    createdAt: Optional[datetime] = None  # Allow editing creation date
 
 
 class MaterialCreate(BaseModel):
@@ -100,15 +102,21 @@ class MaterialCreate(BaseModel):
 class ActivityCreate(BaseModel):
     name: str
     completed: Optional[bool] = False
+    isArchived: Optional[bool] = False
     activityDate: Optional[datetime] = None
     completedAt: Optional[datetime] = None
+    startDatetime: Optional[datetime] = None
+    endDatetime: Optional[datetime] = None
 
 
 class ActivityUpdate(BaseModel):
     name: Optional[str] = None
     completed: Optional[bool] = None
+    isArchived: Optional[bool] = None
     activityDate: Optional[datetime] = None
     completedAt: Optional[datetime] = None
+    startDatetime: Optional[datetime] = None
+    endDatetime: Optional[datetime] = None
 
 
 class OperationalCostCreate(BaseModel):
@@ -158,8 +166,13 @@ def serialize_activity(a: Activity) -> dict:
         "id": a.id,
         "name": a.name,
         "completed": a.completed,
+        "isArchived": a.is_archived,
         "completedAt": a.completed_at.isoformat() if a.completed_at else None,
         "activityDate": a.activity_date.isoformat() if a.activity_date else None,
+        "startDatetime": a.start_datetime.isoformat() if a.start_datetime else None,
+        "endDatetime": a.end_datetime.isoformat() if a.end_datetime else None,
+        "createdAt": a.created_at.isoformat() if a.created_at else None,
+        "updatedAt": a.updated_at.isoformat() if a.updated_at else None,
     }
 
 
@@ -253,6 +266,7 @@ def get_sites(
 @app.post("/sites", status_code=201)
 def create_site(site_data: SiteCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     try:
+        now = datetime.now(timezone.utc)
         new_site = Site(
             id=str(uuid.uuid4()),
             name=site_data.name,
@@ -267,6 +281,8 @@ def create_site(site_data: SiteCreate, db: Session = Depends(get_db), current_us
             images=site_data.images,
             notes=site_data.notes,
             is_archived=site_data.isArchived or False,
+            created_at=site_data.createdAt or now,
+            updated_at=now,
         )
         db.add(new_site)
         db.commit()
@@ -308,6 +324,7 @@ def update_site(site_id: str, site_data: SiteUpdate, db: Session = Depends(get_d
             "images": "images",
             "notes": "notes",
             "isArchived": "is_archived",
+            "createdAt": "created_at",
         }
 
         for api_field, db_field in field_mapping.items():
@@ -394,6 +411,45 @@ def delete_material(site_id: str, material_id: str, db: Session = Depends(get_db
 # ========== ACTIVITY ROUTES ==========
 
 
+@app.get("/sites/{site_id}/activities")
+def get_activities(
+    site_id: str,
+    sort_by: Optional[str] = "activityDate",
+    sort_order: Optional[str] = "desc",
+    include_archived: Optional[bool] = False,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user)
+):
+    site = db.query(Site).filter(Site.id == site_id).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+
+    # Define sortable fields
+    sortable_fields = {
+        "activityDate": Activity.activity_date,
+        "startDatetime": Activity.start_datetime,
+        "endDatetime": Activity.end_datetime,
+        "createdAt": Activity.created_at,
+        "updatedAt": Activity.updated_at,
+        "name": Activity.name,
+    }
+
+    sort_column = sortable_fields.get(sort_by, Activity.activity_date)
+    query = db.query(Activity).filter(Activity.site_id == site_id)
+
+    # Filter by archive status
+    if not include_archived:
+        query = query.filter(Activity.is_archived == False)
+
+    if sort_order.lower() == "asc":
+        query = query.order_by(sort_column.asc())
+    else:
+        query = query.order_by(sort_column.desc())
+
+    activities = query.all()
+    return [serialize_activity(a) for a in activities]
+
+
 @app.post("/sites/{site_id}/activities", status_code=201)
 def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     site = db.query(Site).filter(Site.id == site_id).first()
@@ -404,7 +460,10 @@ def add_activity(site_id: str, activity_data: ActivityCreate, db: Session = Depe
         id=str(uuid.uuid4()),
         name=activity_data.name,
         completed=activity_data.completed or False,
+        is_archived=activity_data.isArchived or False,
         activity_date=activity_data.activityDate,
+        start_datetime=activity_data.startDatetime,
+        end_datetime=activity_data.endDatetime,
         completed_at=activity_data.completedAt or (datetime.now(timezone.utc) if activity_data.completed else None),
         site_id=site.id,
     )
@@ -435,10 +494,76 @@ def update_activity(site_id: str, activity_id: str, activity_data: ActivityUpdat
         activity.completed_at = data["completedAt"]
     if "activityDate" in data:
         activity.activity_date = data["activityDate"]
+    if "startDatetime" in data:
+        activity.start_datetime = data["startDatetime"]
+    if "endDatetime" in data:
+        activity.end_datetime = data["endDatetime"]
+    if "isArchived" in data:
+        activity.is_archived = data["isArchived"]
 
     db.commit()
     db.refresh(activity)
     return serialize_activity(activity)
+
+
+@app.post("/sites/{site_id}/activities/bulk-archive")
+def bulk_archive_activities(
+    site_id: str,
+    activity_ids: List[str],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user)
+):
+    """Archive multiple activities at once (scrum-style batch operations)."""
+    site = db.query(Site).filter(Site.id == site_id).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+
+    activities = db.query(Activity).filter(
+        Activity.id.in_(activity_ids),
+        Activity.site_id == site_id
+    ).all()
+
+    if not activities:
+        raise HTTPException(status_code=404, detail="No matching activities found")
+
+    archived_count = 0
+    for activity in activities:
+        activity.is_archived = True
+        archived_count += 1
+
+    db.commit()
+
+    return {"message": f"Archived {archived_count} activities", "archivedIds": [a.id for a in activities]}
+
+
+@app.post("/sites/{site_id}/activities/bulk-unarchive")
+def bulk_unarchive_activities(
+    site_id: str,
+    activity_ids: List[str],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user)
+):
+    """Unarchive multiple activities at once."""
+    site = db.query(Site).filter(Site.id == site_id).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+
+    activities = db.query(Activity).filter(
+        Activity.id.in_(activity_ids),
+        Activity.site_id == site_id
+    ).all()
+
+    if not activities:
+        raise HTTPException(status_code=404, detail="No matching activities found")
+
+    unarchived_count = 0
+    for activity in activities:
+        activity.is_archived = False
+        unarchived_count += 1
+
+    db.commit()
+
+    return {"message": f"Unarchived {unarchived_count} activities", "unarchivedIds": [a.id for a in activities]}
 
 
 @app.delete("/sites/{site_id}/activities/{activity_id}")

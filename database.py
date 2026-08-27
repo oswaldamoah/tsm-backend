@@ -98,15 +98,21 @@ def migrate_schema():
             activity_additions = {
                 "activity_date": "DATETIME",
                 "completed_at": "DATETIME",
+                "start_datetime": "DATETIME",
+                "end_datetime": "DATETIME",
                 "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
                 "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                "is_archived": "BOOLEAN DEFAULT 0",
             }
         else:
             activity_additions = {
                 "activity_date": "TIMESTAMP",
                 "completed_at": "TIMESTAMP",
+                "start_datetime": "TIMESTAMP",
+                "end_datetime": "TIMESTAMP",
                 "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
                 "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "is_archived": "BOOLEAN DEFAULT FALSE",
             }
         for col_name, col_def in activity_additions.items():
             if col_name not in existing_columns.get("activities", set()):

@@ -76,9 +76,12 @@ class Activity(Base):
     name = Column(String)
     completed = Column(Boolean, default=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)  # When activity was completed
+    is_archived = Column(Boolean, default=False)  # Allow archiving activities (scrum-style)
 
-    # New: Dates when creating activities
-    activity_date = Column(DateTime(timezone=True), nullable=True)
+    # New: Scrum-style sprint planning dates
+    activity_date = Column(DateTime(timezone=True), nullable=True)        # Single date (legacy)
+    start_datetime = Column(DateTime(timezone=True), nullable=True)     # Planned start
+    end_datetime = Column(DateTime(timezone=True), nullable=True)       # Planned end
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

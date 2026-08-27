@@ -138,11 +138,12 @@ Base URL: `https://your-app.onrender.com` (or `http://localhost:8000` locally)
   "googleMapsUrl": "https://maps.google.com/?q=6.6851,-1.6218",  // optional — Google Maps link
   "images": "[\"https://example.com/img1.jpg\",\"https://example.com/img2.jpg\"]",  // optional — JSON array of image URLs
   "notes": "Site has backup generator. Access via Adum main road.",  // optional — site notes
-  "isArchived": false                      // optional, default false
+  "isArchived": false,                     // optional, default false
+  "createdAt": "2025-06-15T09:30:00Z"      // optional, editable creation date (defaults to now)
 }
 ```
 
-**`PUT /sites/{site_id}`** accepts any subset of the same fields.
+**`PUT /sites/{site_id}`** accepts any subset of the same fields — including `createdAt` for backdating sites.
 
 ### Response Object — Site
 
@@ -169,7 +170,7 @@ A site response includes **everything nested**:
     { "id": "m1", "name": "Cable", "quantity": 100.0, "unit": "m", "cost": 250.0 }
   ],
   "activities": [
-    { "id": "a1", "name": "Install antenna", "completed": true, "activityDate": "2026-08-02T09:00:00+00:00" }
+    { "id": "a1", "name": "Install antenna", "completed": true, "isArchived": false, "activityDate": "2026-08-02T09:00:00+00:00", "startDatetime": "2026-08-02T09:00:00+00:00", "endDatetime": "2026-08-02T17:00:00+00:00" }
   ],
   "operationalCosts": [
     { "id": "oc1", "name": "Rent", "amount": 1200.0 }
@@ -199,24 +200,64 @@ A site response includes **everything nested**:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/sites/{site_id}/activities` | List activities. Query params: `sort_by` (activityDate, startDatetime, endDatetime, createdAt, updatedAt, name), `sort_order` (asc/desc), `include_archived` (true/false). |
 | `POST` | `/sites/{site_id}/activities` | Add activity. |
-| `PATCH` | `/sites/{site_id}/activities/{activity_id}` | Update name / `completed` / `activityDate`. |
+| `PATCH` | `/sites/{site_id}/activities/{activity_id}` | Update name / `completed` / `activityDate` / `startDatetime` / `endDatetime` / `isArchived`. |
 | `DELETE` | `/sites/{site_id}/activities/{activity_id}` | Delete activity. |
+| `POST` | `/sites/{site_id}/activities/bulk-archive` | Archive multiple activities at once (scrum-style). Body: `["activity_id_1", "activity_id_2", ...]` |
+| `POST` | `/sites/{site_id}/activities/bulk-unarchive` | Unarchive multiple activities at once. Body: `["activity_id_1", "activity_id_2", ...]` |
 
-**`POST /sites/{site_id}/activities`:**
+**`POST /sites/{site_id}/activities`** (scrum-style sprint planning):
 
 ```json
 {
   "name": "Tower erection",
   "completed": false,
-  "activityDate": "2026-08-15T08:00:00Z"
+  "activityDate": "2026-08-15T08:00:00Z",       // legacy single date
+  "startDatetime": "2026-08-15T08:00:00Z",      // planned sprint start
+  "endDatetime": "2026-08-15T17:00:00Z",        // planned sprint end
+  "isArchived": false                            // archive completed sprints
 }
 ```
 
-**`PATCH /sites/{site_id}/activities/{activity_id}`** — partial update, e.g. toggle completion:
+**`PATCH /sites/{site_id}/activities/{activity_id}`** — partial update, e.g. toggle completion or archive:
 
 ```json
-{ "completed": true }
+{ "completed": true, "isArchived": true }
+```
+
+**`GET /sites/{site_id}/activities`** — supports sorting & filtering:
+
+```bash
+# Sort by sprint start date (newest first), exclude archived (default)
+GET /sites/{site_id}/activities?sort_by=startDatetime&sort_order=desc
+
+# Include archived activities
+GET /sites/{site_id}/activities?include_archived=true
+
+# Sort by activity name (A-Z)
+GET /sites/{site_id}/activities?sort_by=name&sort_order=asc
+```
+
+**Sortable fields:** `activityDate`, `startDatetime`, `endDatetime`, `createdAt`, `updatedAt`, `name`
+
+---
+
+### Activity Response Object
+
+```json
+{
+  "id": "a1",
+  "name": "Tower erection",
+  "completed": true,
+  "isArchived": false,
+  "completedAt": "2026-08-15T16:00:00+00:00",
+  "activityDate": "2026-08-15T08:00:00+00:00",
+  "startDatetime": "2026-08-15T08:00:00+00:00",
+  "endDatetime": "2026-08-15T17:00:00+00:00",
+  "createdAt": "2026-08-01T12:00:00+00:00",
+  "updatedAt": "2026-08-01T12:00:00+00:00"
+}
 ```
 
 ### Operational Costs (nested under a site)

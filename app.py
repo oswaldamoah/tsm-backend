@@ -124,6 +124,54 @@ class OperationalCostCreate(BaseModel):
     amount: float
 
 
+class ImportMaterial(BaseModel):
+    name: str
+    quantity: Optional[float] = 0.0
+    unit: Optional[str] = None
+    cost: Optional[float] = 0.0
+
+
+class ImportActivity(BaseModel):
+    name: str
+    completed: Optional[bool] = False
+    isArchived: Optional[bool] = False
+    activityDate: Optional[datetime] = None
+    completedAt: Optional[datetime] = None
+    startDatetime: Optional[datetime] = None
+    endDatetime: Optional[datetime] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+
+
+class ImportOperationalCost(BaseModel):
+    name: str
+    amount: Optional[float] = 0.0
+
+
+class ImportSite(BaseModel):
+    name: str
+    laborCost: Optional[float] = 0.0
+    siteCode: Optional[str] = None
+    siteType: Optional[str] = None
+    region: Optional[str] = None
+    location: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    googleMapsUrl: Optional[str] = None
+    images: Optional[str] = None
+    notes: Optional[str] = None
+    isArchived: Optional[bool] = False
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    materials: Optional[List[ImportMaterial]] = []
+    activities: Optional[List[ImportActivity]] = []
+    operationalCosts: Optional[List[ImportOperationalCost]] = []
+
+
+class ImportPayload(BaseModel):
+    sites: List[ImportSite]
+
+
 class CompanySettingsUpdate(BaseModel):
     name: Optional[str] = None
     logoUrl: Optional[str] = None
@@ -250,17 +298,267 @@ def get_current_user_info(current_user=Depends(get_current_active_user)):
 @app.get("/sites")
 def get_sites(
     include_archived: bool = Query(False, description="Include archived sites"),
+    sort_by: Optional[str] = Query(None, description="createdAt, updatedAt, name, siteType, region"),
+    sort_order: Optional[str] = Query("desc", description="asc or desc"),
     db: Session = Depends(get_db),
 ):
     try:
         query = db.query(Site)
         if not include_archived:
             query = query.filter(Site.is_archived == False)  # noqa: E712
+
+        sortable_fields = {
+            "createdAt": Site.created_at,
+            "updatedAt": Site.updated_at,
+            "name": Site.name,
+            "siteType": Site.site_type,
+            "region": Site.region,
+        }
+        if sort_by in sortable_fields:
+            sort_column = sortable_fields[sort_by]
+            query = query.order_by(sort_column.asc() if (sort_order or "").lower() == "asc" else sort_column.desc())
+
         sites = query.all()
         return [serialize_site(site) for site in sites]
     except Exception as e:
         print(f"❌ Error in get_sites: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch sites: {str(e)}")
+
+
+@app.get("/sites/stats")
+def get_site_stats(
+    include_archived: bool = Query(False, description="Include archived sites in stats"),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Site)
+    if not include_archived:
+        query = query.filter(Site.is_archived == False)  # noqa: E712
+    sites = query.all()
+
+    total_sites = len(sites)
+    archived_sites = db.query(Site).filter(Site.is_archived == True).count()  # noqa: E712
+
+    completed_sites = 0
+    total_labor = 0.0
+    total_materials = 0.0
+    total_operational = 0.0
+    monthly: dict = {}
+    yearly: dict = {}
+
+    def bucket(store: dict, key: str):
+        return store.setdefault(
+            key,
+            {"period": key, "laborCost": 0.0, "materialsCost": 0.0, "operationalCost": 0.0, "total": 0.0},
+        )
+
+    for site in sites:
+        active_activities = [a for a in site.activities if not a.is_archived]
+        if active_activities and all(a.completed for a in active_activities):
+            completed_sites += 1
+
+        labor = site.labor_cost or 0.0
+        materials_cost = sum(m.cost or 0.0 for m in site.materials)
+        operational_cost = sum(oc.amount or 0.0 for oc in site.operational_costs)
+        site_total = labor + materials_cost + operational_cost
+
+        total_labor += labor
+        total_materials += materials_cost
+        total_operational += operational_cost
+
+        month_key = site.created_at.strftime("%Y-%m") if site.created_at else "unknown"
+        year_key = site.created_at.strftime("%Y") if site.created_at else "unknown"
+
+        for store, key in ((monthly, month_key), (yearly, year_key)):
+            b = bucket(store, key)
+            b["laborCost"] += labor
+            b["materialsCost"] += materials_cost
+            b["operationalCost"] += operational_cost
+            b["total"] += site_total
+
+    completed_percentage = round((completed_sites / total_sites * 100), 1) if total_sites else 0.0
+
+    def rounded(rows: dict) -> list:
+        out = []
+        for row in sorted(rows.values(), key=lambda r: r["period"]):
+            out.append({k: (round(v, 2) if isinstance(v, float) else v) for k, v in row.items()})
+        return out
+
+    return {
+        "totalSites": total_sites,
+        "archivedSites": archived_sites,
+        "completedSites": completed_sites,
+        "completedPercentage": completed_percentage,
+        "expenses": {
+            "totalLaborCost": round(total_labor, 2),
+            "totalMaterialsCost": round(total_materials, 2),
+            "totalOperationalCost": round(total_operational, 2),
+            "totalExpenses": round(total_labor + total_materials + total_operational, 2),
+            "monthly": rounded(monthly),
+            "yearly": rounded(yearly),
+        },
+    }
+
+
+@app.get("/sites/export")
+def export_sites(
+    include_archived: bool = Query(True, description="Include archived sites in export"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    query = db.query(Site)
+    if not include_archived:
+        query = query.filter(Site.is_archived == False)  # noqa: E712
+    sites = query.all()
+    settings = db.query(CompanySetting).filter(CompanySetting.id == "company").first()
+
+    return {
+        "version": "1.0",
+        "exportedAt": datetime.now(timezone.utc).isoformat(),
+        "companySettings": {
+            "name": settings.name,
+            "logoUrl": settings.logo_url,
+            "email": settings.email,
+            "phone": settings.phone,
+            "address": settings.address,
+            "website": settings.website,
+        } if settings else None,
+        "sites": [serialize_site(s) for s in sites],
+    }
+
+
+@app.post("/sites/import")
+def import_sites(payload: ImportPayload, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    imported_ids = []
+    skipped = []
+
+    existing_sites = db.query(Site).all()
+    existing_by_code = {s.site_code.strip().lower(): s for s in existing_sites if s.site_code}
+    existing_by_name_loc = {
+        (s.name.strip().lower(), (s.location or "").strip().lower()): s
+        for s in existing_sites
+    }
+
+    for site_in in payload.sites:
+        code_key = site_in.siteCode.strip().lower() if site_in.siteCode else None
+        name_loc_key = (site_in.name.strip().lower(), (site_in.location or "").strip().lower())
+
+        dup = existing_by_code.get(code_key) if code_key else None
+        if not dup:
+            dup = existing_by_name_loc.get(name_loc_key)
+
+        if dup:
+            skipped.append({
+                "name": site_in.name,
+                "siteCode": site_in.siteCode,
+                "reason": f"Duplicate of existing site '{dup.name}' ({dup.id})",
+            })
+            continue
+
+        now = datetime.now(timezone.utc)
+        new_site = Site(
+            id=str(uuid.uuid4()),
+            name=site_in.name,
+            labor_cost=site_in.laborCost or 0.0,
+            site_code=site_in.siteCode or generate_site_code(site_in.name, db),
+            site_type=site_in.siteType,
+            region=site_in.region,
+            location=site_in.location,
+            latitude=site_in.latitude,
+            longitude=site_in.longitude,
+            google_maps_url=site_in.googleMapsUrl,
+            images=site_in.images,
+            notes=site_in.notes,
+            is_archived=site_in.isArchived or False,
+            created_at=site_in.createdAt or now,
+            updated_at=site_in.updatedAt or now,
+        )
+        db.add(new_site)
+
+        for m in site_in.materials or []:
+            db.add(Material(
+                id=str(uuid.uuid4()),
+                name=m.name,
+                quantity=m.quantity or 0.0,
+                unit=m.unit,
+                cost=m.cost or 0.0,
+                site_id=new_site.id,
+            ))
+
+        for a in site_in.activities or []:
+            db.add(Activity(
+                id=str(uuid.uuid4()),
+                name=a.name,
+                completed=a.completed or False,
+                is_archived=a.isArchived or False,
+                activity_date=a.activityDate,
+                start_datetime=a.startDatetime,
+                end_datetime=a.endDatetime,
+                completed_at=a.completedAt,
+                created_at=a.createdAt or now,
+                updated_at=a.updatedAt or now,
+                site_id=new_site.id,
+            ))
+
+        for oc in site_in.operationalCosts or []:
+            db.add(OperationalCost(
+                id=str(uuid.uuid4()),
+                name=oc.name,
+                amount=oc.amount or 0.0,
+                site_id=new_site.id,
+            ))
+
+        # Dedupe against other rows later in the same payload, not just the DB.
+        if new_site.site_code:
+            existing_by_code[new_site.site_code.strip().lower()] = new_site
+        existing_by_name_loc[(new_site.name.strip().lower(), (new_site.location or "").strip().lower())] = new_site
+
+        imported_ids.append(new_site.id)
+
+    db.commit()
+
+    return {
+        "message": f"Imported {len(imported_ids)} sites, skipped {len(skipped)} duplicates",
+        "importedCount": len(imported_ids),
+        "skippedCount": len(skipped),
+        "importedSiteIds": imported_ids,
+        "skipped": skipped,
+    }
+
+
+@app.post("/sites/bulk-archive")
+def bulk_archive_sites(
+    site_ids: List[str],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """Archive multiple sites at once."""
+    sites = db.query(Site).filter(Site.id.in_(site_ids)).all()
+    if not sites:
+        raise HTTPException(status_code=404, detail="No matching sites found")
+
+    for site in sites:
+        site.is_archived = True
+
+    db.commit()
+    return {"message": f"Archived {len(sites)} sites", "archivedIds": [s.id for s in sites]}
+
+
+@app.post("/sites/bulk-unarchive")
+def bulk_unarchive_sites(
+    site_ids: List[str],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """Unarchive multiple sites at once."""
+    sites = db.query(Site).filter(Site.id.in_(site_ids)).all()
+    if not sites:
+        raise HTTPException(status_code=404, detail="No matching sites found")
+
+    for site in sites:
+        site.is_archived = False
+
+    db.commit()
+    return {"message": f"Unarchived {len(sites)} sites", "unarchivedIds": [s.id for s in sites]}
 
 
 @app.post("/sites", status_code=201)

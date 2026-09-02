@@ -1,6 +1,6 @@
 # Telecom Site Backend
 
-FastAPI + PostgreSQL (Neon) REST API for managing telecom sites — materials, activities, operational costs, and company settings. Ready to deploy and connect straight to your frontend.
+FastAPI + PostgreSQL (Neon) REST API for managing telecom sites — materials, scrum-style activities (with sprint start/end dates and bulk archiving), operational costs, company settings, site stats/expense reporting, and full JSON import/export. Ready to deploy and connect straight to your frontend.
 
 ---
 
@@ -115,13 +115,28 @@ Base URL: `https://your-app.onrender.com` (or `http://localhost:8000` locally)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/sites` | List all sites. Add `?include_archived=true` to include archived. |
+| `GET` | `/sites` | List all sites. Query params: `include_archived` (bool), `sort_by` (`createdAt`, `updatedAt`, `name`, `siteType`, `region`), `sort_order` (`asc`/`desc`, default `desc`). |
+| `GET` | `/sites/stats` | Site-wide stats: counts, completion %, expense breakdown. See below. |
+| `GET` | `/sites/export` | Export all sites (with nested materials/activities/costs) + company settings as JSON. Auth required. |
+| `POST` | `/sites/import` | Import sites from the same JSON shape as `/sites/export`. Skips duplicates. Auth required. |
+| `POST` | `/sites/bulk-archive` | Archive multiple sites at once. Body: `["site_id_1", "site_id_2", ...]`. Auth required. |
+| `POST` | `/sites/bulk-unarchive` | Unarchive multiple sites at once. Same body shape. Auth required. |
 | `GET` | `/sites/{site_id}` | Get one site with all nested data. |
 | `POST` | `/sites` | Create a site. |
 | `PUT` | `/sites/{site_id}` | Update site fields. |
 | `DELETE` | `/sites/{site_id}` | Delete a site (cascades to materials/activities/costs). |
 | `POST` | `/sites/{site_id}/archive` | Archive a site. |
 | `POST` | `/sites/{site_id}/unarchive` | Unarchive a site. |
+
+**Sorting example:**
+
+```bash
+# Newest sites first (default sort_order)
+GET /sites?sort_by=createdAt&sort_order=desc
+
+# Oldest sites first — useful for a "founded" timeline view
+GET /sites?sort_by=createdAt&sort_order=asc
+```
 
 **`POST /sites` request body:**
 
@@ -177,6 +192,80 @@ A site response includes **everything nested**:
   ]
 }
 ```
+
+### Site Stats — `GET /sites/stats`
+
+Returns aggregate numbers for a dashboard: total sites, how many are "completed" (a site counts as completed once it has at least one non-archived activity and every non-archived activity on it is marked `completed`), and an expense breakdown (labor cost + materials cost + operational costs) grouped by the month/year the **site** was created. Add `?include_archived=true` to fold archived sites into the numbers.
+
+```json
+{
+  "totalSites": 12,
+  "archivedSites": 2,
+  "completedSites": 5,
+  "completedPercentage": 41.7,
+  "expenses": {
+    "totalLaborCost": 45000.0,
+    "totalMaterialsCost": 12500.0,
+    "totalOperationalCost": 3200.0,
+    "totalExpenses": 60700.0,
+    "monthly": [
+      { "period": "2025-08", "laborCost": 5000.0, "materialsCost": 1200.0, "operationalCost": 0.0, "total": 6200.0 },
+      { "period": "2026-02", "laborCost": 8000.0, "materialsCost": 3000.0, "operationalCost": 450.5, "total": 11450.5 }
+    ],
+    "yearly": [
+      { "period": "2025", "laborCost": 5000.0, "materialsCost": 1200.0, "operationalCost": 0.0, "total": 6200.0 },
+      { "period": "2026", "laborCost": 40000.0, "materialsCost": 11300.0, "operationalCost": 3200.0, "total": 54500.0 }
+    ]
+  }
+}
+```
+
+### Import / Export — complete data transfer
+
+`GET /sites/export` returns every site with all of its nested materials, activities, and operational costs, plus company settings — everything needed to fully reconstruct the data elsewhere. Feed that same JSON straight into `POST /sites/import` (on this instance or another) to bring the data back in.
+
+**Duplicate detection on import:** a site is treated as a duplicate — and skipped, not overwritten — if either its `siteCode` matches an existing site's code, or its `name` + `location` pair matches an existing site (case-insensitive). Duplicates are also detected *within* the same import payload, so re-importing an export is always safe (idempotent) and importing a mixed batch only creates the genuinely new sites.
+
+```bash
+# Export everything (requires auth)
+GET /sites/export
+Authorization: Bearer <token>
+
+# Import it back in (or into another instance) — matches are skipped automatically
+POST /sites/import
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "sites": [ /* same shape as the "sites" array from /sites/export */ ] }
+```
+
+Response:
+
+```json
+{
+  "message": "Imported 3 sites, skipped 1 duplicates",
+  "importedCount": 3,
+  "skippedCount": 1,
+  "importedSiteIds": ["..."],
+  "skipped": [
+    { "name": "Kumasi Tower B", "siteCode": "TEL-KUMA-NIK3", "reason": "Duplicate of existing site 'Kumasi Tower B' (bc90fbb3-...)" }
+  ]
+}
+```
+
+### Bulk Archive Sites
+
+Mirrors the activities bulk-archive pattern, for a "select multiple sites → archive" action on a sites list:
+
+```bash
+POST /sites/bulk-archive
+Authorization: Bearer <token>
+Content-Type: application/json
+
+["site_id_1", "site_id_2"]
+```
+
+`POST /sites/bulk-unarchive` takes the same body shape and reverses it.
 
 ### Materials (nested under a site)
 
@@ -497,7 +586,8 @@ localStorage.removeItem('username');
 - **Local fallback:** SQLite at `telecom_sites.db` if `DATABASE_URL` is missing.
 - **Migrations:** Tables are created automatically on startup (`Base.metadata.create_all`) and missing columns are added via `migrate_schema()` for PostgreSQL. No manual migration steps needed.
 
-**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`#   T r i g g e r   d e p l o y  
- t r i g g e r   d e p l o y   0 8 / 2 6 / 2 0 2 6   0 4 : 3 7 : 5 1  
- f o r c e   d e p l o y   0 8 / 2 6 / 2 0 2 6   0 5 : 3 7 : 0 6  
- 
+**Tables:** `sites`, `materials`, `activities`, `operational_costs`, `company_settings`, `users`
+
+### Backdating existing data
+
+`Site.createdAt` and `Activity` dates are editable, not just set-once-at-creation — `PUT /sites/{id}` and `PATCH /sites/{site_id}/activities/{id}` both accept `createdAt`/date fields at any time. To backfill realistic historical dates for seed/demo data (rather than everything showing "today"), see `update_dates.py` — a one-off script that sets specific sites/activities to hand-picked past dates by `siteCode`/activity name. Extend that script (or write a similar one-off) whenever a batch of existing records needs backdating; there's no need for a dedicated endpoint since the regular update endpoints already support it per-record.

@@ -10,3 +10,7 @@ gunicorn
 # bcrypt>=4.1 breaks passlib-based setups and we don't want resolution drift.
 bcrypt==4.0.1
 python-jose[cryptography]
+
+# AI assistant: HTTP client for LLM providers + PowerPoint export
+httpx
+python-pptx

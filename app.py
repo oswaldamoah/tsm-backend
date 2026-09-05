@@ -57,6 +57,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ========== AI ASSISTANT ROUTES ==========
+# Mounted defensively: if the AI deps aren't installed the rest of the API must
+# still boot. /ai/status reports why the assistant is unavailable.
+try:
+    from ai.routes import router as ai_router
+
+    app.include_router(ai_router)
+except Exception as _ai_import_error:  # pragma: no cover - deployment safety net
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "AI assistant routes not mounted: %s", _ai_import_error
+    )
+
+
 # ========== PYDANTIC SCHEMAS ==========
 
 

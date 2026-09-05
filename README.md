@@ -29,8 +29,10 @@ Pick one. No local install needed.
    | Field | Value |
    |-------|-------|
    | **Build Command** | `pip install -r requirements.txt` |
-   | **Start Command** | `gunicorn app:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT` |
-   | **Environment** | Add `DATABASE_URL` (already in your `.env`) |
+   | **Start Command** | `gunicorn app:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120` |
+   | **Environment** | Add `DATABASE_URL` (already in your `.env`) and `GEMINI_API_KEY` (for the AI assistant) |
+
+   ⚠️ **`--timeout 120` matters.** Gunicorn defaults to 30s, which is shorter than a multi-step AI answer — the worker gets killed and the caller sees a 502. Also note that a Start Command set in the Render dashboard **overrides the `Procfile`**, so the flag has to be in whichever one your service actually uses. If you'd rather the `Procfile` be the single source of truth, clear the Start Command field in the dashboard.
 4. **Deploy**. Done. You'll get a URL like `https://your-app.onrender.com`.
 
 ### Option B — Railway
@@ -387,6 +389,105 @@ GET /sites/{site_id}/activities?sort_by=name&sort_order=asc
 
 ---
 
+## 🤖 AI Assistant
+
+A chat assistant that answers questions about the live data, draws charts, and builds slide decks. It runs on a **free** model — Google's Gemini free tier by default.
+
+### Setup (2 minutes)
+
+1. Get a free API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no credit card needed.
+2. Set `GEMINI_API_KEY` in your `.env` locally, and as an environment variable on Render.
+3. Restart. `GET /ai/status` should report `{"enabled": true}`.
+
+Free-tier limits are roughly 250 requests/day. If you need more headroom, switch `AI_PROVIDER` to `groq` (≈14,000/day) and set `GROQ_API_KEY` — no other change required.
+
+### Deploying it (Render)
+
+1. Push. Render rebuilds and installs `httpx` + `python-pptx` from `requirements.txt`.
+2. In the Render dashboard → **Environment**, add `GEMINI_API_KEY`. This is the only manual step; without it every other endpoint still works and `/ai/status` returns `{"enabled": false}`.
+3. Hit `GET /ai/status` with a Bearer token to confirm.
+
+Two things about the deployment that the assistant depends on:
+
+- **The `Procfile` sets `--timeout 120`.** Gunicorn's default is 30s, which is shorter than a multi-step AI answer on a free-tier model — the worker gets killed mid-request and the caller sees a 502. Don't remove it.
+- **`AI_TOTAL_BUDGET` (default 90s) is the wall-clock budget for one question.** When it runs out the model is told to answer from what it already has instead of calling more tools. Keep it comfortably below the gunicorn timeout.
+
+On Render's free tier the service also sleeps after 15 minutes idle, so the first request after a quiet spell pays a ~50s cold start before the model is even reached. The web UI waits up to 150s and then suggests trying again.
+
+### How it answers (and why the numbers are right)
+
+The model **never sees the database and never writes SQL**. It is given a fixed set of read-only tools — `list_sites`, `aggregate_costs`, `list_activities`, `get_site_details`, and so on — and can only pick a tool and fill in its typed arguments. The server runs the query, returns JSON, and the model answers from that. Consequences worth knowing:
+
+- Figures come from real queries, so it cannot invent a total.
+- A question it has no tool for gets "I can't answer that from this data" rather than a guess.
+- It is strictly read-only. It cannot create, edit, archive or delete anything.
+- Archived records are excluded unless the question asks for them.
+
+Charts and decks are produced through the same mechanism: `create_chart` and `create_presentation` are tools, so the structured output is validated server-side before it reaches the browser.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ai/status` | Whether the assistant is configured, and which model is in use. |
+| `POST` | `/ai/chat` | Ask a question. Returns the answer plus any charts/deck. |
+| `POST` | `/ai/presentation.pptx` | Render a returned deck as a downloadable PowerPoint file. |
+
+All three require a Bearer token, like the rest of the API.
+
+```bash
+curl -X POST https://your-api/ai/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Which region has the highest material costs?"}'
+```
+
+**Response shape:**
+
+```json
+{
+  "answer": "Eastern is the most expensive region at GHS 149,830.00 ...",
+  "charts": [
+    {
+      "title": "Total cost by region",
+      "type": "bar",
+      "categories": ["Eastern", "Ashanti"],
+      "series": [{ "name": "Materials", "values": [137380.0, 111535.0] }],
+      "xLabel": "",
+      "yLabel": "Cost (GHS)"
+    }
+  ],
+  "presentation": {
+    "title": "Regional Cost Review",
+    "subtitle": "Generated from live site data",
+    "slides": [
+      { "title": "Where the money goes", "bullets": ["..."], "chartIndex": 0, "notes": "" }
+    ]
+  },
+  "toolsUsed": ["aggregate_costs", "create_chart"],
+  "provider": "gemini",
+  "model": "gemini-2.5-flash"
+}
+```
+
+`charts` is `[]` and `presentation` is `null` when the question didn't call for them. Pass previous turns back as `history` (`[{role, content}]`) for follow-up questions.
+
+To download a deck, POST the `presentation` and `charts` objects straight back to `/ai/presentation.pptx`; it streams a `.pptx` with native, editable PowerPoint charts.
+
+### Code layout
+
+| File | Purpose |
+|------|---------|
+| `ai/provider.py` | Provider adapters (Gemini + any OpenAI-compatible endpoint) behind one interface. |
+| `ai/tools.py` | The read-only data tools and their JSON Schemas. Add a tool here to widen what the assistant can answer. |
+| `ai/agent.py` | The tool-calling loop, system prompt, and chart/deck validation. |
+| `ai/slides.py` | PowerPoint generation via `python-pptx`. |
+| `ai/routes.py` | The three endpoints above. |
+
+The router is mounted defensively in `app.py` — if the AI dependencies are missing, the rest of the API still boots and `/ai/status` explains why the assistant is off.
+
+---
+
 ## 🔧 Environment Variables
 
 | Variable | Required | Description |
@@ -394,6 +495,13 @@ GET /sites/{site_id}/activities?sort_by=name&sort_order=asc
 | `DATABASE_URL` | ✅ Yes | PostgreSQL connection string (Neon is preconfigured in `.env`). Falls back to local SQLite (`telecom_sites.db`) if missing. |
 | `PORT` | Optional | Injected by hosting platform. Defaults to `8000`. |
 | `ENV` | Optional | Set to `development` for auto-reload. Any other value = production (no reload). |
+| `GEMINI_API_KEY` | For AI | Free key from [Google AI Studio](https://aistudio.google.com/apikey). Without it the AI assistant reports itself unavailable; the rest of the API is unaffected. |
+| `AI_PROVIDER` | Optional | `gemini` (default), `groq`, `openrouter`, or `ollama`. |
+| `AI_MODEL` | Optional | Override the model. Defaults: `gemini-2.5-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
+| `AI_REQUEST_TIMEOUT` | Optional | Seconds to wait on a single model call. Defaults to `60`. |
+| `AI_TOTAL_BUDGET` | Optional | Wall-clock seconds for one whole question, across all tool round-trips. Defaults to `90`. Must stay below the gunicorn `--timeout` in the `Procfile`. |
+
+See `.env.example` for a copy-paste starting point.
 
 ---
 

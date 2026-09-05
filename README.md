@@ -466,7 +466,7 @@ curl -X POST https://your-api/ai/chat \
   },
   "toolsUsed": ["aggregate_costs", "create_chart"],
   "provider": "gemini",
-  "model": "gemini-2.5-flash"
+  "model": "gemini-3.6-flash"
 }
 ```
 
@@ -497,7 +497,7 @@ The router is mounted defensively in `app.py` — if the AI dependencies are mis
 | `ENV` | Optional | Set to `development` for auto-reload. Any other value = production (no reload). |
 | `GEMINI_API_KEY` | For AI | Free key from [Google AI Studio](https://aistudio.google.com/apikey). Without it the AI assistant reports itself unavailable; the rest of the API is unaffected. |
 | `AI_PROVIDER` | Optional | `gemini` (default), `groq`, `openrouter`, or `ollama`. |
-| `AI_MODEL` | Optional | Override the model. Defaults: `gemini-2.5-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
+| `AI_MODEL` | Optional | Override the model. Defaults: `gemini-3.6-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
 | `AI_REQUEST_TIMEOUT` | Optional | Seconds to wait on a single model call. Defaults to `60`. |
 | `AI_TOTAL_BUDGET` | Optional | Wall-clock seconds for one whole question, across all tool round-trips. Defaults to `90`. Must stay below the gunicorn `--timeout` in the `Procfile`. |
 

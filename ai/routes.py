@@ -82,7 +82,15 @@ def ai_status(current_user=Depends(get_current_active_user)):
         provider = get_provider()
     except LLMError as exc:
         return {"enabled": False, "reason": str(exc)}
-    return {"enabled": True, "provider": provider.name, "model": provider.model}
+
+    # Show the whole failover chain so it's obvious what will cover a rate limit.
+    chain = getattr(provider, "providers", [provider])
+    return {
+        "enabled": True,
+        "provider": provider.name,
+        "model": provider.model,
+        "fallbacks": [f"{p.name}:{p.model}" for p in chain[1:]],
+    }
 
 
 @router.post("/chat")

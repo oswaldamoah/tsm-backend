@@ -399,7 +399,26 @@ A chat assistant that answers questions about the live data, draws charts, and b
 2. Set `GEMINI_API_KEY` in your `.env` locally, and as an environment variable on Render.
 3. Restart. `GET /ai/status` should report `{"enabled": true}`.
 
-Free-tier limits are roughly 250 requests/day. If you need more headroom, switch `AI_PROVIDER` to `groq` (≈14,000/day) and set `GROQ_API_KEY` — no other change required.
+### Rate limits, and why you probably won't notice them
+
+Gemini's free tier is **metered per model** and the newer models are stingy — `gemini-3.6-flash` allows on the order of 20 requests before it starts refusing, and one question costs 2–6 requests. On its own that means a handful of questions before you hit a wall.
+
+So the assistant doesn't rely on one model. `get_provider()` builds a **failover chain**, and a quota refusal moves quietly to the next entry:
+
+```
+gemini-3.6-flash  ->  gemini-3.5-flash  ->  gemini-3.1-flash-lite
+```
+
+Measured: six questions fired back to back with no pauses, all six answered, riding down the chain as each bucket emptied. Only quota refusals and provider outages advance the chain — a genuine error surfaces immediately rather than being retried three times.
+
+Two details worth knowing if you change this:
+
+- Once a model answers, the conversation **stays** with it. Gemini 3.x tool calls carry a thought signature that only their author can replay, so drifting back to the primary mid-conversation breaks it.
+- A tool call inherited from a different model is flattened to plain text rather than replayed as a function call, for the same reason.
+
+Configure with `AI_MODEL_FALLBACKS` (comma-separated), or set `AI_DISABLE_PROVIDER_FAILOVER=1` to keep it on one provider.
+
+**For real headroom, add a Groq key.** Its free tier is roughly 14,000 requests/day against Gemini's ~20. Set `GROQ_API_KEY` and it's automatically appended to the chain as the last resort; set `AI_PROVIDER=groq` to lead with it. No code change either way.
 
 ### Deploying it (Render)
 
@@ -497,7 +516,10 @@ The router is mounted defensively in `app.py` — if the AI dependencies are mis
 | `ENV` | Optional | Set to `development` for auto-reload. Any other value = production (no reload). |
 | `GEMINI_API_KEY` | For AI | Free key from [Google AI Studio](https://aistudio.google.com/apikey). Without it the AI assistant reports itself unavailable; the rest of the API is unaffected. |
 | `AI_PROVIDER` | Optional | `gemini` (default), `groq`, `openrouter`, or `ollama`. |
-| `AI_MODEL` | Optional | Override the model. Defaults: `gemini-3.6-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
+| `AI_MODEL` | Optional | Override the primary model. Defaults: `gemini-3.6-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
+| `AI_MODEL_FALLBACKS` | Optional | Comma-separated models to try when the primary is rate limited. Defaults to `gemini-3.5-flash,gemini-3.1-flash-lite` for Gemini. |
+| `GROQ_API_KEY` | Optional | Free key from [console.groq.com](https://console.groq.com). Far more generous than Gemini; auto-appended to the failover chain when set. |
+| `AI_DISABLE_PROVIDER_FAILOVER` | Optional | Set to `1` to keep the chain within one provider. |
 | `AI_REQUEST_TIMEOUT` | Optional | Seconds to wait on a single model call. Defaults to `60`. |
 | `AI_TOTAL_BUDGET` | Optional | Wall-clock seconds for one whole question, across all tool round-trips. Defaults to `90`. Must stay below the gunicorn `--timeout` in the `Procfile`. |
 

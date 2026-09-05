@@ -35,6 +35,10 @@ class ToolCall:
     name: str
     arguments: dict
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # Gemini 3.x returns an opaque "thought signature" alongside each function
+    # call and rejects the next request if it isn't echoed back verbatim. Other
+    # providers ignore this.
+    signature: Optional[str] = None
 
 
 @dataclass
@@ -86,7 +90,7 @@ class GeminiProvider(LLMProvider):
     name = "gemini"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
         if not api_key:
             raise LLMError("GEMINI_API_KEY is not set")
         self.api_key = api_key
@@ -105,7 +109,11 @@ class GeminiProvider(LLMProvider):
                 if msg.get("content"):
                     parts.append({"text": msg["content"]})
                 for call in msg.get("tool_calls") or []:
-                    parts.append({"functionCall": {"name": call.name, "args": call.arguments}})
+                    part: dict = {"functionCall": {"name": call.name, "args": call.arguments}}
+                    if call.signature:
+                        # Required by Gemini 3.x; the API 400s without it.
+                        part["thoughtSignature"] = call.signature
+                    parts.append(part)
                 if parts:
                     contents.append({"role": "model", "parts": parts})
             elif role == "tool":
@@ -166,7 +174,12 @@ class GeminiProvider(LLMProvider):
                 text_chunks.append(part["text"])
             elif "functionCall" in part:
                 fc = part["functionCall"]
-                tool_calls.append(ToolCall(name=fc.get("name", ""), arguments=fc.get("args") or {}))
+                tool_calls.append(ToolCall(
+                    name=fc.get("name", ""),
+                    arguments=fc.get("args") or {},
+                    # Sits beside functionCall on the part; older models omit it.
+                    signature=part.get("thoughtSignature") or fc.get("thoughtSignature"),
+                ))
 
         return LLMResponse(text="".join(text_chunks).strip() or None, tool_calls=tool_calls)
 
@@ -306,7 +319,7 @@ def get_provider() -> LLMProvider:
     if provider == "gemini":
         return GeminiProvider(
             api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
-            model=os.environ.get("AI_MODEL", "gemini-2.5-flash").strip(),
+            model=os.environ.get("AI_MODEL", "gemini-3.6-flash").strip(),
         )
 
     if provider in _OPENAI_COMPAT_DEFAULTS:

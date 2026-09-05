@@ -424,7 +424,9 @@ class FailoverProvider(LLMProvider):
 # ========== FACTORY ==========
 
 _OPENAI_COMPAT_DEFAULTS = {
-    "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
+    # Groq retires models fairly often - check https://console.groq.com/docs/models
+    # if this 404s. Verified tool-calling as of this commit.
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b", "GROQ_API_KEY"),
     "openrouter": (
         "https://openrouter.ai/api/v1",
         "meta-llama/llama-3.3-70b-instruct:free",
@@ -436,7 +438,23 @@ _OPENAI_COMPAT_DEFAULTS = {
 
 # Tried in order when the primary model is rate limited. Free tiers meter per
 # model, so these are separate buckets on the same key.
-_GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+# Groq meters tokens-per-minute *per model* (8k TPM on the free tier), and one
+# round trip costs ~2k of fixed overhead, so a single model is only good for
+# about three requests a minute. Listing several buys proportionally more.
+_MODEL_FALLBACKS = {
+    "gemini": ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+    "groq": [
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-safeguard-20b",
+    ],
+}
+
+# Providers considered as cross-provider fallbacks when their key is present.
+# Ollama is deliberately excluded: it needs a local server, so adding it blindly
+# would append a fallback that just times out.
+_FAILOVER_PROVIDERS = ("gemini", "groq", "openrouter")
 
 
 def _build_one(provider: str, model: Optional[str] = None) -> LLMProvider:
@@ -487,14 +505,14 @@ def get_provider() -> LLMProvider:
     if configured:
         for model in (m.strip() for m in configured.split(",") if m.strip()):
             add(primary_name, model)
-    elif primary_name == "gemini":
-        for model in _GEMINI_FALLBACKS:
+    else:
+        for model in _MODEL_FALLBACKS.get(primary_name, []):
             add(primary_name, model)
 
-    # A key for another provider is the strongest fallback there is, since its
-    # quota is entirely independent.
+    # A key for a different provider is the strongest fallback there is, since
+    # its quota is entirely independent of the primary's.
     if os.environ.get("AI_DISABLE_PROVIDER_FAILOVER", "").strip().lower() not in ("1", "true", "yes"):
-        for other in ("groq", "openrouter"):
+        for other in _FAILOVER_PROVIDERS:
             if other != primary_name:
                 add(other)
 

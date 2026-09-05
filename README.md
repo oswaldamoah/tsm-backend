@@ -418,7 +418,22 @@ Two details worth knowing if you change this:
 
 Configure with `AI_MODEL_FALLBACKS` (comma-separated), or set `AI_DISABLE_PROVIDER_FAILOVER=1` to keep it on one provider.
 
-**For real headroom, add a Groq key.** Its free tier is roughly 14,000 requests/day against Gemini's ~20. Set `GROQ_API_KEY` and it's automatically appended to the chain as the last resort; set `AI_PROVIDER=groq` to lead with it. No code change either way.
+**Adding a Groq key is the single biggest improvement.** Set `GROQ_API_KEY` and it joins the chain automatically; set `AI_PROVIDER=groq` to lead with it. Measured against Gemini on the same questions, Groq answered in **2–5s versus 8–16s**.
+
+With `AI_PROVIDER=groq` and both keys set, the chain is six models across two providers:
+
+```
+openai/gpt-oss-120b -> openai/gpt-oss-20b -> qwen/qwen3.8-27b
+  -> qwen/qwen3.6-27b -> openai/gpt-oss-safeguard-20b -> gemini-3.6-flash
+```
+
+Six back-to-back questions, no pauses: 6/6 answered.
+
+> ⚠️ **Both providers retire models without warning.** `gemini-2.5-flash` and `llama-3.3-70b-versatile` were both defaults here and both now 404. If the assistant starts failing with "model does not exist", list what your key can actually reach — `GET https://api.groq.com/openai/v1/models` or `GET https://generativelanguage.googleapis.com/v1beta/models` — and update `AI_MODEL` / `AI_MODEL_FALLBACKS`. No code change needed.
+
+### Why the chain needs several models
+
+One round trip carries about **2,000 tokens of fixed overhead** — roughly 450 for the system prompt and 1,600 for the ten tool schemas — before any conversation content. Groq's free tier meters 8,000 tokens per minute *per model*, so a single model sustains only ~3 requests/minute, and one question costs 2–6 requests. Listing several models multiplies that budget, which is why the fallback list is long rather than a token nicety.
 
 ### Deploying it (Render)
 
@@ -516,7 +531,7 @@ The router is mounted defensively in `app.py` — if the AI dependencies are mis
 | `ENV` | Optional | Set to `development` for auto-reload. Any other value = production (no reload). |
 | `GEMINI_API_KEY` | For AI | Free key from [Google AI Studio](https://aistudio.google.com/apikey). Without it the AI assistant reports itself unavailable; the rest of the API is unaffected. |
 | `AI_PROVIDER` | Optional | `gemini` (default), `groq`, `openrouter`, or `ollama`. |
-| `AI_MODEL` | Optional | Override the primary model. Defaults: `gemini-3.6-flash`, `llama-3.3-70b-versatile` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
+| `AI_MODEL` | Optional | Override the primary model. Defaults: `gemini-3.6-flash`, `openai/gpt-oss-120b` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
 | `AI_MODEL_FALLBACKS` | Optional | Comma-separated models to try when the primary is rate limited. Defaults to `gemini-3.5-flash,gemini-3.1-flash-lite` for Gemini. |
 | `GROQ_API_KEY` | Optional | Free key from [console.groq.com](https://console.groq.com). Far more generous than Gemini; auto-appended to the failover chain when set. |
 | `AI_DISABLE_PROVIDER_FAILOVER` | Optional | Set to `1` to keep the chain within one provider. |

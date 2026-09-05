@@ -30,6 +30,22 @@ class LLMError(RuntimeError):
     """Raised when the provider is misconfigured or returns an unusable response."""
 
 
+class RateLimitError(LLMError):
+    """The provider refused the request for quota reasons (HTTP 429).
+
+    Separate from LLMError so the failover chain can tell "try the next model"
+    apart from "this request is broken".
+    """
+
+
+class ProviderUnavailableError(LLMError):
+    """The provider could not be reached, or failed on its own side (5xx).
+
+    Also worth failing over: nothing about the request is wrong, so another
+    provider has a real chance of answering it.
+    """
+
+
 @dataclass
 class ToolCall:
     name: str
@@ -39,6 +55,9 @@ class ToolCall:
     # call and rejects the next request if it isn't echoed back verbatim. Other
     # providers ignore this.
     signature: Optional[str] = None
+    # Which model produced the signature. A signature is only valid for that
+    # model, so the failover chain uses this to decide whether to replay it.
+    signature_model: Optional[str] = None
 
 
 @dataclass
@@ -99,33 +118,54 @@ class GeminiProvider(LLMProvider):
     def _contents(self, messages: list[dict]) -> list[dict]:
         # Gemini's Content.role accepts only "user" and "model"; tool results ride
         # back in as a user turn carrying functionResponse parts.
+        #
+        # Gemini 3.x rejects any functionCall part that lacks a thought signature,
+        # and a signature is only valid for the model that produced it. So a call
+        # made by a different model cannot be replayed as a functionCall at all -
+        # it gets flattened to plain text instead, preserving the information
+        # without tripping the check. Its matching result is flattened too, since
+        # a functionResponse with no functionCall is equally invalid.
         contents: list[dict] = []
+        flattened: set[str] = set()
+
         for msg in messages:
             role = msg["role"]
             if role == "user":
                 contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
             elif role == "assistant":
                 parts: list[dict] = []
+                notes: list[str] = []
                 if msg.get("content"):
                     parts.append({"text": msg["content"]})
                 for call in msg.get("tool_calls") or []:
-                    part: dict = {"functionCall": {"name": call.name, "args": call.arguments}}
                     if call.signature:
-                        # Required by Gemini 3.x; the API 400s without it.
-                        part["thoughtSignature"] = call.signature
-                    parts.append(part)
+                        parts.append({
+                            "functionCall": {"name": call.name, "args": call.arguments},
+                            "thoughtSignature": call.signature,
+                        })
+                    else:
+                        flattened.add(call.id)
+                        notes.append(f"(Called {call.name} with {json.dumps(call.arguments)}.)")
+                if notes:
+                    parts.append({"text": "\n".join(notes)})
                 if parts:
                     contents.append({"role": "model", "parts": parts})
             elif role == "tool":
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": msg["name"],
-                            "response": {"result": json.loads(msg["content"])},
-                        }
-                    }],
-                })
+                if msg.get("tool_call_id") in flattened:
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"Result of {msg['name']}: {msg['content']}"}],
+                    })
+                else:
+                    contents.append({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": msg["name"],
+                                "response": {"result": json.loads(msg["content"])},
+                            }
+                        }],
+                    })
         return contents
 
     def generate(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
@@ -155,10 +195,10 @@ class GeminiProvider(LLMProvider):
                 timeout=REQUEST_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            raise LLMError(f"Could not reach Gemini: {exc}") from exc
+            raise ProviderUnavailableError(f"Could not reach Gemini: {exc}") from exc
 
         if response.status_code != 200:
-            raise LLMError(_describe_http_error("Gemini", response))
+            raise _http_error("Gemini", response)
 
         data = response.json()
         candidates = data.get("candidates") or []
@@ -179,6 +219,7 @@ class GeminiProvider(LLMProvider):
                     arguments=fc.get("args") or {},
                     # Sits beside functionCall on the part; older models omit it.
                     signature=part.get("thoughtSignature") or fc.get("thoughtSignature"),
+                    signature_model=self.model,
                 ))
 
         return LLMResponse(text="".join(text_chunks).strip() or None, tool_calls=tool_calls)
@@ -256,10 +297,10 @@ class OpenAICompatProvider(LLMProvider):
                 timeout=REQUEST_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            raise LLMError(f"Could not reach {self.name}: {exc}") from exc
+            raise ProviderUnavailableError(f"Could not reach {self.name}: {exc}") from exc
 
         if response.status_code != 200:
-            raise LLMError(_describe_http_error(self.name, response))
+            raise _http_error(self.name, response)
 
         choices = response.json().get("choices") or []
         if not choices:
@@ -284,8 +325,8 @@ class OpenAICompatProvider(LLMProvider):
         return LLMResponse(text=(message.get("content") or "").strip() or None, tool_calls=tool_calls)
 
 
-def _describe_http_error(provider: str, response: httpx.Response) -> str:
-    """Turn a provider error body into something a user can act on."""
+def _http_error(provider: str, response: httpx.Response) -> LLMError:
+    """Turn a provider error response into an exception a caller can act on."""
     try:
         body = response.json()
         detail = (body.get("error") or {}).get("message") or json.dumps(body)[:300]
@@ -293,16 +334,99 @@ def _describe_http_error(provider: str, response: httpx.Response) -> str:
         detail = response.text[:300]
 
     if response.status_code == 429:
-        return f"{provider} free-tier rate limit reached. Try again in a minute. ({detail})"
+        return RateLimitError(f"{provider} rate limit reached. ({detail})")
     if response.status_code in (401, 403):
-        return f"{provider} rejected the API key. Check your key in the environment. ({detail})"
-    return f"{provider} error {response.status_code}: {detail}"
+        return LLMError(f"{provider} rejected the API key. Check your key in the environment. ({detail})")
+    if response.status_code >= 500:
+        return ProviderUnavailableError(f"{provider} is having problems ({response.status_code}): {detail}")
+    return LLMError(f"{provider} error {response.status_code}: {detail}")
+
+
+# ========== FAILOVER ==========
+
+def _signatures_for(messages: list[dict], target_model: str) -> list[dict]:
+    """Keep only the thought signatures that belong to `target_model`.
+
+    A signature is valid solely for the model that produced it: replaying
+    another model's is a 400, and so is dropping a model's own. Since the chain
+    can switch models mid-conversation, each call is filtered against whichever
+    model is about to be asked.
+    """
+    adjusted: list[dict] = []
+    for msg in messages:
+        calls = msg.get("tool_calls")
+        if calls and any(c.signature and c.signature_model != target_model for c in calls):
+            msg = {**msg, "tool_calls": [
+                ToolCall(
+                    name=c.name,
+                    arguments=c.arguments,
+                    id=c.id,
+                    signature=c.signature if c.signature_model == target_model else None,
+                    signature_model=c.signature_model,
+                )
+                for c in calls
+            ]}
+        adjusted.append(msg)
+    return adjusted
+
+
+class FailoverProvider(LLMProvider):
+    """Tries each provider in turn, moving on when one is rate limited.
+
+    Free tiers meter per model, so a second model on the same key is usually
+    enough to keep working through a burst. Only quota errors advance the chain;
+    a genuine failure surfaces immediately rather than being retried five times.
+    """
+
+    def __init__(self, providers: list[LLMProvider]):
+        if not providers:
+            raise LLMError("No AI provider configured")
+        self.providers = providers
+        self.primary = providers[0]
+        self.name = self.primary.name
+        self.model = self.primary.model
+        # Whichever model last answered. A conversation carries tool calls that
+        # only its author can replay, so once one model is answering we stay with
+        # it for the rest of the conversation rather than drifting back to the
+        # primary the moment its quota frees up.
+        self._current: Optional[LLMProvider] = None
+
+    def _order(self) -> list[LLMProvider]:
+        if self._current is None or self._current is self.providers[0]:
+            return self.providers
+        rest = [p for p in self.providers if p is not self._current]
+        return [self._current, *rest]
+
+    def generate(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        last_error: Optional[LLMError] = None
+
+        for provider in self._order():
+            # Replay only the signatures this particular model issued.
+            payload = _signatures_for(messages, provider.model)
+            try:
+                response = provider.generate(system, payload, tools)
+            except (RateLimitError, ProviderUnavailableError) as exc:
+                # Nothing wrong with the request itself - let the next one try.
+                last_error = exc
+                continue
+            # Report and stick with whichever model actually answered.
+            self._current = provider
+            self.name, self.model = provider.name, provider.model
+            return response
+
+        assert last_error is not None
+        raise type(last_error)(
+            f"Every configured model is unavailable right now "
+            f"({', '.join(p.model for p in self.providers)}). Last error: {last_error}"
+        )
 
 
 # ========== FACTORY ==========
 
 _OPENAI_COMPAT_DEFAULTS = {
-    "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
+    # Groq retires models fairly often - check https://console.groq.com/docs/models
+    # if this 404s. Verified tool-calling as of this commit.
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b", "GROQ_API_KEY"),
     "openrouter": (
         "https://openrouter.ai/api/v1",
         "meta-llama/llama-3.3-70b-instruct:free",
@@ -312,14 +436,33 @@ _OPENAI_COMPAT_DEFAULTS = {
 }
 
 
-def get_provider() -> LLMProvider:
-    """Build the provider named by AI_PROVIDER (default: gemini)."""
-    provider = (os.environ.get("AI_PROVIDER") or "gemini").strip().lower()
+# Tried in order when the primary model is rate limited. Free tiers meter per
+# model, so these are separate buckets on the same key.
+# Groq meters tokens-per-minute *per model* (8k TPM on the free tier), and one
+# round trip costs ~2k of fixed overhead, so a single model is only good for
+# about three requests a minute. Listing several buys proportionally more.
+_MODEL_FALLBACKS = {
+    "gemini": ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+    "groq": [
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-safeguard-20b",
+    ],
+}
 
+# Providers considered as cross-provider fallbacks when their key is present.
+# Ollama is deliberately excluded: it needs a local server, so adding it blindly
+# would append a fallback that just times out.
+_FAILOVER_PROVIDERS = ("gemini", "groq", "openrouter")
+
+
+def _build_one(provider: str, model: Optional[str] = None) -> LLMProvider:
+    """Build a single provider. `model` overrides whatever the env says."""
     if provider == "gemini":
         return GeminiProvider(
             api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
-            model=os.environ.get("AI_MODEL", "gemini-3.6-flash").strip(),
+            model=(model or os.environ.get("AI_MODEL") or "gemini-3.6-flash").strip(),
         )
 
     if provider in _OPENAI_COMPAT_DEFAULTS:
@@ -329,7 +472,7 @@ def get_provider() -> LLMProvider:
             raise LLMError(f"{key_env} is not set")
         return OpenAICompatProvider(
             api_key=api_key,
-            model=os.environ.get("AI_MODEL", default_model).strip(),
+            model=(model or os.environ.get("AI_MODEL") or default_model).strip(),
             base_url=os.environ.get("AI_BASE_URL", base_url).strip(),
             provider_name=provider,
         )
@@ -337,6 +480,43 @@ def get_provider() -> LLMProvider:
     raise LLMError(
         f"Unknown AI_PROVIDER '{provider}'. Use one of: gemini, groq, openrouter, ollama."
     )
+
+
+def get_provider() -> LLMProvider:
+    """Build the provider chain: the primary, then whatever can cover for it.
+
+    The chain is AI_PROVIDER's model first, then AI_MODEL_FALLBACKS (or sensible
+    per-provider defaults), then any other provider whose key happens to be set.
+    """
+    primary_name = (os.environ.get("AI_PROVIDER") or "gemini").strip().lower()
+    chain: list[LLMProvider] = [_build_one(primary_name)]
+    seen = {(chain[0].name, chain[0].model)}
+
+    def add(provider_name: str, model: Optional[str] = None) -> None:
+        try:
+            candidate = _build_one(provider_name, model)
+        except LLMError:
+            return  # no key for it, or unknown - just skip
+        if (candidate.name, candidate.model) not in seen:
+            seen.add((candidate.name, candidate.model))
+            chain.append(candidate)
+
+    configured = os.environ.get("AI_MODEL_FALLBACKS", "").strip()
+    if configured:
+        for model in (m.strip() for m in configured.split(",") if m.strip()):
+            add(primary_name, model)
+    else:
+        for model in _MODEL_FALLBACKS.get(primary_name, []):
+            add(primary_name, model)
+
+    # A key for a different provider is the strongest fallback there is, since
+    # its quota is entirely independent of the primary's.
+    if os.environ.get("AI_DISABLE_PROVIDER_FAILOVER", "").strip().lower() not in ("1", "true", "yes"):
+        for other in _FAILOVER_PROVIDERS:
+            if other != primary_name:
+                add(other)
+
+    return FailoverProvider(chain) if len(chain) > 1 else chain[0]
 
 
 def is_configured() -> bool:

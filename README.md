@@ -529,6 +529,15 @@ The router is mounted defensively in `app.py` — if the AI dependencies are mis
 | `DATABASE_URL` | ✅ Yes | PostgreSQL connection string (Neon is preconfigured in `.env`). Falls back to local SQLite (`telecom_sites.db`) if missing. |
 | `PORT` | Optional | Injected by hosting platform. Defaults to `8000`. |
 | `ENV` | Optional | Set to `development` for auto-reload. Any other value = production (no reload). |
+| `SECRET_KEY` | Recommended | Signs session tokens. Long random string. Generated and stored in the DB if unset. |
+| `SIGNUP_ACCESS_CODE` | Optional | Access phrase for manager sign-ups. Unset (with the admin one) = sign-up off. |
+| `ADMIN_SIGNUP_ACCESS_CODE` | Optional | Access phrase for admin sign-ups. |
+| `RESEND_API_KEY` | For resets | Resend API key used to email password-reset links. |
+| `RESEND_FROM_EMAIL` | For resets | Sender, on a domain verified in Resend. |
+| `FRONTEND_URL` | For resets | Base URL of the web app, used in reset links. |
+| `VALID_API_KEYS` | Optional | Comma-separated `tsk_...` keys for machine access (admin rights). |
+| `WEB_CONCURRENCY` | Optional | Gunicorn workers (default 2 — right for Render's 512 MB free instance). |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | Optional | Postgres connection pool per worker (defaults 5 / 10). |
 | `GEMINI_API_KEY` | For AI | Free key from [Google AI Studio](https://aistudio.google.com/apikey). Without it the AI assistant reports itself unavailable; the rest of the API is unaffected. |
 | `AI_PROVIDER` | Optional | `gemini` (default), `groq`, `openrouter`, or `ollama`. |
 | `AI_MODEL` | Optional | Override the primary model. Defaults: `gemini-3.6-flash`, `openai/gpt-oss-120b` (groq), `meta-llama/llama-3.3-70b-instruct:free` (openrouter), `llama3.1` (ollama). |
@@ -556,172 +565,109 @@ Interactive API docs (Swagger UI) at **`http://localhost:8000/docs`** — great 
 
 ## 🔐 Authentication
 
-The API supports **two authentication methods**:
+People sign in with **email and password**. There are no built-in default accounts.
 
-| Method | Use Case | Header Format |
-|--------|----------|---------------|
-| **JWT (username/password)** | Frontend login, user sessions | `Authorization: Bearer <jwt_token>` |
-| **API Key** | Server-to-server, scripts, CI/CD | `Authorization: Bearer <tsk_...>` |
+| Method | Use case | Header |
+|--------|----------|--------|
+| **Session token (JWT)** | The web app | `Authorization: Bearer <jwt>` |
+| **API key** | Scripts, CI, server-to-server | `Authorization: Bearer tsk_...` |
 
-Both arrive via the same `Authorization: Bearer <token>` header — the backend detects which type by the token prefix.
+Every data endpoint (sites, stats, export, company settings, AI) needs one of these. Only `/`, `/healthz` and the `/auth/*` routes below are public.
 
-### Default Seeded Users
+### Who can create an account
 
-On first startup (or when the `users` table is empty), the app automatically creates two users:
+Sign-up needs an **access phrase** you hand out, so random visitors can't register:
 
-| Username | Password | Role | Capabilities |
-|----------|----------|------|--------------|
-| `admin` | `admin123` | `admin` | Full access — all endpoints + user management |
-| `manager` | `manager123` | `manager` | Read/write sites, materials, activities, costs |
+| Variable | Effect |
+|----------|--------|
+| `SIGNUP_ACCESS_CODE` | Anyone who signs up with this phrase becomes a **manager**. |
+| `ADMIN_SIGNUP_ACCESS_CODE` | Anyone who signs up with this phrase becomes an **admin**. |
 
-> ⚠️ **Change these passwords in production!** They're seeded for convenience only.
+Leave both unset to switch sign-up off completely (the sign-in screen then says "Ask your administrator"). Change a phrase at any time; existing accounts are unaffected.
 
-### Login (Get JWT Token)
+> **First admin:** set `ADMIN_SIGNUP_ACCESS_CODE`, sign up once with it, then unset it (or change it) so nobody else can become an admin.
 
-```bash
-POST /auth/login
-Content-Type: application/json
+### Password resets (Resend)
 
-{
-  "username": "admin",
-  "password": "admin123"
-}
-```
+"Forgot password?" emails a single-use link that expires after 30 minutes. Only a SHA-256 hash of the link's token is stored. Asking for a reset always returns the same message, so the endpoint can't be used to discover which emails have accounts. Resetting the password signs the person out everywhere else.
 
-**Response (200):**
+1. Create a free account at [resend.com](https://resend.com) and an API key.
+2. Verify your sending domain in Resend (or use `onboarding@resend.dev` for testing, which only delivers to your own Resend login email).
+3. Set `RESEND_API_KEY`, `RESEND_FROM_EMAIL` (e.g. `Telecom Site Manager <no-reply@yourdomain.com>`) and `FRONTEND_URL` (your deployed web app, used to build the link).
+
+Without `RESEND_API_KEY` the email is printed to the server log instead, which is handy locally.
+
+### Endpoints
+
+| Method | Path | Body | Notes |
+|--------|------|------|-------|
+| `GET` | `/auth/config` | – | `{ "signupEnabled": true }` |
+| `POST` | `/auth/login` | `{ "email", "password" }` | Returns a token. Email is case-insensitive. |
+| `POST` | `/auth/signup` | `{ "email", "username", "password", "accessCode" }` | Password ≥ 8 chars, username 3–32 of `A-Z a-z 0-9 . _ -`. Returns a token. |
+| `POST` | `/auth/forgot-password` | `{ "email" }` | Always `200` with the same message. |
+| `POST` | `/auth/reset-password` | `{ "token", "password" }` | Returns a token (signs the person in). |
+| `GET` | `/auth/me` | – | Current user's `username`, `email`, `role`. |
+
+Token response:
+
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "eyJhbGciOi...",
   "token_type": "bearer",
-  "username": "admin",
-  "role": "admin"
+  "username": "ama.k",
+  "email": "ama@company.com",
+  "role": "manager"
 }
 ```
 
-**Errors:**
-- `401 Invalid credentials` — wrong username/password
+Login, sign-up and reset requests are rate limited per IP (HTTP `429` with a readable message).
 
-### Using the JWT Token
+### Sessions
 
-Include the token in subsequent requests:
+- Tokens last 7 days (`ACCESS_TOKEN_EXPIRE_MINUTES` to change).
+- Set `SECRET_KEY` to a long random string in production. If it's unset, one is generated on first boot and stored in the `app_config` table so every worker shares it.
+- Changing a password invalidates all of that person's existing tokens.
 
-```bash
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
+### Old default accounts
 
-**Token expiry:** 7 days (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES` in `auth.py`).
+Earlier versions created `admin / admin123` and `manager / manager123` and reset those passwords on every boot. Those two accounts are now **switched off automatically** at startup. Create real accounts with the sign-up flow above.
 
-### Role-Based Access
+### API keys
 
-| Role | Can Access |
-|------|------------|
-| `admin` | All endpoints (future: user management, settings) |
-| `manager` | All site/material/activity/cost CRUD, company settings |
-
-Endpoints requiring auth use `Depends(get_current_active_user)` — returns `401` if missing/invalid, `403` if role insufficient.
-
-### API Keys (Server-to-Server)
-
-For automated access (CI/CD, scripts, external services), use the preconfigured API key:
+Set `VALID_API_KEYS` (comma-separated, each starting with `tsk_`) for scripts and integrations. API keys have admin access, so keep them out of the repository. Generate one with:
 
 ```bash
-Authorization: Bearer tsk_v7AcKSzC6Pe0caTyVuZk2FluUha_4CoBNDjRj1SHeZE
+python -c "import secrets; print('tsk_' + secrets.token_urlsafe(32))"
 ```
 
-**Configure in `.env`:**
-```env
-VALID_API_KEYS=tsk_v7AcKSzC6Pe0caTyVuZk2FluUha_4CoBNDjRj1SHeZE
-```
-Comma-separate multiple keys. API keys have **admin-equivalent access**.
-
-### Adding Custom Users (Manual)
-
-Since there's no self-registration endpoint, **you control who gets access** by inserting directly into the database:
+### Adding a user by hand
 
 ```python
-# One-off script (run locally or in a shell)
 from database import SessionLocal
 from auth import create_user
 
 db = SessionLocal()
-create_user(db, "your_username", "you@example.com", "your_secure_password", "manager")
-# role can be "admin" or "manager"
+create_user(db, "ama.k", "ama@company.com", "a-long-password", "manager")  # or "admin"
 db.close()
 ```
 
-Or via raw SQL (e.g., Neon dashboard, `psql`, DBeaver):
+### Tests
 
-```sql
--- Password must be bcrypt-hashed. Generate hash first:
--- python -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('your_password'))"
-
-INSERT INTO users (id, username, email, hashed_password, role, is_active, created_at, updated_at)
-VALUES (
-  gen_random_uuid(),
-  'your_username',
-  'you@example.com',
-  '$2b$12$...hashed_password_here...',
-  'manager',
-  true,
-  now(),
-  now()
-);
+```bash
+pip install pytest
+pytest test_auth.py -q
 ```
 
-> ✅ **Only you can add users** — no public registration, no forgot-password flow. Full control.
+---
 
-### Frontend Login Page Example
+## ⚡ Performance notes
 
-```jsx
-// React example
-const login = async (username, password) => {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  });
-  
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || 'Login failed');
-  }
-  
-  const { access_token, username, role } = await res.json();
-  
-  // Store token (localStorage, httpOnly cookie, context, etc.)
-  localStorage.setItem('auth_token', access_token);
-  localStorage.setItem('user_role', role);
-  localStorage.setItem('username', username);
-  
-  return { access_token, username, role };
-};
-
-// Authenticated fetch helper
-const authFetch = (url, options = {}) => {
-  const token = localStorage.getItem('auth_token');
-  return fetch(url, {
-    ...options,
-    headers: {
-      ...options.headers,
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
-  });
-};
-
-// Usage
-const sites = await authFetch(`${API_BASE}/sites`).then(r => r.json());
-```
-
-### Logout
-
-Client-side only — delete the stored token:
-
-```js
-localStorage.removeItem('auth_token');
-localStorage.removeItem('user_role');
-localStorage.removeItem('username');
-```
+- **Sites load in 4 queries, whatever the count.** Materials, activities and costs are batch-loaded (`selectinload`) instead of one query per site per relation, which was the main cause of slow loads against a remote Neon database.
+- **Stats are computed by the database** with `SUM`/`COUNT ... GROUP BY` rather than loading every row.
+- **Indexes** on every `site_id` foreign key, `sites.is_archived` and `lower(users.email)` are created automatically at startup.
+- **Connection pooling** keeps warm TLS connections to Postgres (`pool_pre_ping` + `pool_recycle` handle Neon's idle shutdowns).
+- **Gzip** compresses JSON responses over 1 KB.
+- **Cold starts:** Render's free tier sleeps after 15 idle minutes and the next request waits ~50 s. `.github/workflows/keep-warm.yml` pings `/healthz` every 10 minutes to prevent that (set the `BACKEND_URL` repository variable if your URL differs). One always-on service fits in Render's 750 free hours a month.
 
 ---
 

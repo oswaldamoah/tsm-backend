@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -12,17 +12,46 @@ SQLALCHEMY_DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "sqlite:///./telecom_sites.db"
 )
+# Heroku/Render-style URLs use the deprecated "postgres://" scheme, which
+# SQLAlchemy 2.x refuses. Normalise it so either form works.
+if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+    SQLALCHEMY_DATABASE_URL = "postgresql://" + SQLALCHEMY_DATABASE_URL[len("postgres://"):]
 
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+IS_SQLITE = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
+
+if IS_SQLITE:
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False},
     )
-else:
-    # For PostgreSQL (Neon), remove sqlite-specific connect_args
-    engine = create_engine(SQLALCHEMY_DATABASE_URL)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _record):
+        # WAL lets reads run while a write is in progress; NORMAL sync is safe
+        # with WAL and much faster than the default FULL.
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
+else:
+    # PostgreSQL (Neon). Opening a TLS connection to a remote database costs
+    # several round trips, so keep a warm pool and reuse connections:
+    # - pool_pre_ping drops connections Neon closed while its compute slept,
+    #   instead of failing the user's request with "SSL connection closed".
+    # - pool_recycle stays under Neon's idle timeout.
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL,
+        pool_size=int(os.environ.get("DB_POOL_SIZE", "5")),
+        max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", "10")),
+        pool_pre_ping=True,
+        pool_recycle=280,
+        pool_use_lifo=True,  # reuse the hottest connection; lets extras idle out
+        connect_args={"connect_timeout": 10, "application_name": "tsm-backend"},
+    )
+
+# expire_on_commit=False: after commit we serialize the objects we just wrote;
+# without this every attribute access re-SELECTs the row.
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 
 Base = declarative_base()
 
@@ -45,7 +74,7 @@ def migrate_schema():
 
     inspector = inspect(engine)
     existing_columns = {}
-    is_sqlite = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
+    is_sqlite = IS_SQLITE
 
     for table_name in ["sites", "activities", "company_settings", "users"]:
         try:
@@ -146,9 +175,30 @@ def migrate_schema():
                 print(f"✅ Added column users.{col_name}")
 
 
+# Foreign keys are not indexed automatically in PostgreSQL. Without these,
+# loading a site's materials/activities/costs is a full table scan each time.
+_INDEXES = {
+    "ix_materials_site_id": "materials (site_id)",
+    "ix_activities_site_id": "activities (site_id)",
+    "ix_operational_costs_site_id": "operational_costs (site_id)",
+    "ix_sites_is_archived": "sites (is_archived)",
+    "ix_users_email_lower": "users (lower(email))",
+}
+
+
+def ensure_indexes():
+    with engine.begin() as conn:
+        for name, target in _INDEXES.items():
+            try:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {target}"))
+            except Exception as e:  # never block startup on an index
+                print(f"[WARN] Could not create index {name}: {e}")
+
+
 def init_db():
     """Create all tables and run migrations."""
     import models  # noqa: F401 - ensures models are registered with Base
     Base.metadata.create_all(bind=engine)
     migrate_schema()
-    print("[OK] Database initialized (tables + migrations complete)")
+    ensure_indexes()
+    print("[OK] Database initialized (tables + migrations complete)")

@@ -13,7 +13,7 @@ Handlers are called as handler(db, **arguments).
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from models import Activity, CompanySetting, Material, OperationalCost, Site
 
@@ -72,8 +72,17 @@ def _clamp(limit: Optional[int]) -> int:
     return min(int(limit), MAX_ROWS)
 
 
+def _sites_query(db: Session):
+    # Batch-load children; per-site lazy loads are one round trip each.
+    return db.query(Site).options(
+        selectinload(Site.materials),
+        selectinload(Site.activities),
+        selectinload(Site.operational_costs),
+    )
+
+
 def _visible_sites(db: Session, include_archived: bool) -> list[Site]:
-    query = db.query(Site)
+    query = _sites_query(db)
     if not include_archived:
         query = query.filter(Site.is_archived == False)  # noqa: E712
     return query.all()
@@ -193,7 +202,7 @@ def list_sites(
     limit: int = DEFAULT_LIMIT,
 ) -> dict:
     """Filtered list of sites with their costs and activity progress."""
-    query = db.query(Site)
+    query = _sites_query(db)
     if not include_archived:
         query = query.filter(Site.is_archived == False)  # noqa: E712
     if name_contains:
@@ -486,8 +495,8 @@ def list_operational_costs(
 
 def get_data_dictionary(db: Session) -> dict:
     """What fields exist and which values are actually in use - orients the model."""
-    regions = sorted({s.region for s in db.query(Site).all() if s.region})
-    site_types = sorted({s.site_type for s in db.query(Site).all() if s.site_type})
+    regions = sorted({r for (r,) in db.query(Site.region).distinct() if r})
+    site_types = sorted({t for (t,) in db.query(Site.site_type).distinct() if t})
     company = db.query(CompanySetting).filter(CompanySetting.id == "company").first()
     return {
         "currency": "GHS",

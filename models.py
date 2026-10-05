@@ -116,3 +116,25 @@ class CompanySetting(Base):
     website = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PasswordResetToken(Base):
+    """One-time password reset links. Only a SHA-256 of the token is stored, so
+    a leaked database cannot be used to reset anyone's password."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppConfig(Base):
+    """Small key/value store for server-generated settings (e.g. the JWT
+    signing key when SECRET_KEY is not set), shared by every worker."""
+    __tablename__ = "app_config"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)

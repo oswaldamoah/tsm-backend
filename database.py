@@ -12,10 +12,13 @@ SQLALCHEMY_DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "sqlite:///./telecom_sites.db"
 )
-# Heroku/Render-style URLs use the deprecated "postgres://" scheme, which
-# SQLAlchemy 2.x refuses. Normalise it so either form works.
-if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-    SQLALCHEMY_DATABASE_URL = "postgresql://" + SQLALCHEMY_DATABASE_URL[len("postgres://"):]
+# Use the psycopg 3 driver for every Postgres URL, whatever scheme it was
+# written with ("postgres://", "postgresql://", "postgresql+psycopg2://").
+# psycopg 3 ships wheels for current Python versions (incl. 3.14 on Render).
+for _prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://", "postgres://"):
+    if SQLALCHEMY_DATABASE_URL.startswith(_prefix):
+        SQLALCHEMY_DATABASE_URL = "postgresql+psycopg://" + SQLALCHEMY_DATABASE_URL[len(_prefix):]
+        break
 
 IS_SQLITE = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
 

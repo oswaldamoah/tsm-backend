@@ -1,7 +1,8 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
-psycopg2-binary
+psycopg[binary]
+psycopg2-binary  # only used by the create_user.py script
 python-dotenv
 pydantic
 gunicorn

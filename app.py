@@ -61,6 +61,8 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     await loop.run_in_executor(None, get_secret_key)  # resolve once, before traffic
+    from backfill import run_backfill
+    await loop.run_in_executor(None, run_backfill)  # one-time; no-op after the first run
     yield
     # Shutdown: nothing special needed
 
@@ -164,6 +166,21 @@ class ActivityUpdate(BaseModel):
 class OperationalCostCreate(BaseModel):
     name: str
     amount: float
+
+
+class MaterialUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    quantity: Optional[float] = Field(None, gt=0)
+    unit: Optional[str] = None
+    cost: Optional[float] = Field(None, ge=0)
+    purchaseDate: Optional[datetime] = None
+    requestor: Optional[str] = Field(None, max_length=255)
+    requestorDepartment: Optional[str] = Field(None, max_length=255)
+
+
+class OperationalCostUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    amount: Optional[float] = Field(None, ge=0)
 
 
 class ImportMaterial(BaseModel):
@@ -905,6 +922,34 @@ def add_material(site_id: str, material_data: MaterialCreate, db: Session = Depe
     return serialize_material(new_material)
 
 
+@app.patch("/sites/{site_id}/materials/{material_id}")
+def update_material(site_id: str, material_id: str, data: MaterialUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    material = db.query(Material).filter(Material.id == material_id, Material.site_id == site_id).first()
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+
+    changes = data.model_dump(exclude_unset=True)
+    mapping = {
+        "name": "name",
+        "quantity": "quantity",
+        "unit": "unit",
+        "cost": "cost",
+        "purchaseDate": "purchase_date",
+        "requestor": "requestor",
+        "requestorDepartment": "requestor_department",
+    }
+    for api_field, column in mapping.items():
+        if api_field in changes:
+            value = changes[api_field]
+            if isinstance(value, str):
+                value = value.strip() or None
+            setattr(material, column, value)
+
+    db.commit()
+    db.refresh(material)
+    return serialize_material(material)
+
+
 @app.delete("/sites/{site_id}/materials/{material_id}")
 def delete_material(site_id: str, material_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     material = db.query(Material).filter(Material.id == material_id, Material.site_id == site_id).first()
@@ -1104,6 +1149,23 @@ def add_operational_cost(site_id: str, oc_data: OperationalCostCreate, db: Sessi
     db.commit()
     db.refresh(new_oc)
     return serialize_operational_cost(new_oc)
+
+
+@app.patch("/sites/{site_id}/operational-costs/{operational_cost_id}")
+def update_operational_cost(site_id: str, operational_cost_id: str, data: OperationalCostUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    oc = db.query(OperationalCost).filter(OperationalCost.id == operational_cost_id, OperationalCost.site_id == site_id).first()
+    if not oc:
+        raise HTTPException(status_code=404, detail="Operational cost not found")
+
+    changes = data.model_dump(exclude_unset=True)
+    if "name" in changes:
+        oc.name = changes["name"].strip()
+    if "amount" in changes:
+        oc.amount = changes["amount"]
+
+    db.commit()
+    db.refresh(oc)
+    return serialize_operational_cost(oc)
 
 
 @app.delete("/sites/{site_id}/operational-costs/{operational_cost_id}")

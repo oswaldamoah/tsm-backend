@@ -65,6 +65,9 @@ class Material(Base):
     quantity = Column(Float)
     unit = Column(String)
     cost = Column(Float)
+    purchase_date = Column(DateTime(timezone=True), nullable=True)   # Day the material was bought
+    requestor = Column(String(255), nullable=True)                   # Who asked for it
+    requestor_department = Column(String(255), nullable=True)        # Their department
     site_id = Column(String, ForeignKey("sites.id"))
     site = relationship("Site", back_populates="materials")
 

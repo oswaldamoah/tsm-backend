@@ -439,6 +439,9 @@ def list_materials(
             "quantity": m.quantity,
             "unit": m.unit,
             "cost": round(m.cost or 0.0, 2),
+            "purchaseDate": m.purchase_date.date().isoformat() if m.purchase_date else None,
+            "requestor": m.requestor,
+            "requestorDepartment": m.requestor_department,
         }
         for m in materials
     ]

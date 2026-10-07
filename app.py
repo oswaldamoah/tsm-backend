@@ -136,6 +136,9 @@ class MaterialCreate(BaseModel):
     quantity: float
     unit: str
     cost: float
+    purchaseDate: Optional[datetime] = None
+    requestor: Optional[str] = Field(None, max_length=255)
+    requestorDepartment: Optional[str] = Field(None, max_length=255)
 
 
 class ActivityCreate(BaseModel):
@@ -168,6 +171,9 @@ class ImportMaterial(BaseModel):
     quantity: Optional[float] = 0.0
     unit: Optional[str] = None
     cost: Optional[float] = 0.0
+    purchaseDate: Optional[datetime] = None
+    requestor: Optional[str] = None
+    requestorDepartment: Optional[str] = None
 
 
 class ImportActivity(BaseModel):
@@ -245,6 +251,9 @@ def serialize_material(m: Material) -> dict:
         "quantity": m.quantity,
         "unit": m.unit,
         "cost": m.cost,
+        "purchaseDate": m.purchase_date.isoformat() if m.purchase_date else None,
+        "requestor": m.requestor,
+        "requestorDepartment": m.requestor_department,
     }
 
 
@@ -679,6 +688,9 @@ def import_sites(payload: ImportPayload, db: Session = Depends(get_db), current_
                 quantity=m.quantity or 0.0,
                 unit=m.unit,
                 cost=m.cost or 0.0,
+                purchase_date=m.purchaseDate,
+                requestor=m.requestor,
+                requestor_department=m.requestorDepartment,
                 site_id=new_site.id,
             ))
 
@@ -882,6 +894,9 @@ def add_material(site_id: str, material_data: MaterialCreate, db: Session = Depe
         quantity=material_data.quantity,
         unit=material_data.unit,
         cost=material_data.cost,
+        purchase_date=material_data.purchaseDate,
+        requestor=(material_data.requestor or "").strip() or None,
+        requestor_department=(material_data.requestorDepartment or "").strip() or None,
         site_id=site.id,
     )
     db.add(new_material)

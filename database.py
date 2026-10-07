@@ -79,7 +79,7 @@ def migrate_schema():
     existing_columns = {}
     is_sqlite = IS_SQLITE
 
-    for table_name in ["sites", "activities", "company_settings", "users"]:
+    for table_name in ["sites", "activities", "materials", "company_settings", "users"]:
         try:
             existing_columns[table_name] = {
                 col["name"] for col in inspector.get_columns(table_name)
@@ -150,6 +150,17 @@ def migrate_schema():
             if col_name not in existing_columns.get("activities", set()):
                 conn.execute(text(f'ALTER TABLE activities ADD COLUMN "{col_name}" {col_def}'))
                 print(f"✅ Added column activities.{col_name}")
+
+        # --- MATERIALS table additions ---
+        material_additions = {
+            "purchase_date": "DATETIME" if is_sqlite else "TIMESTAMP",
+            "requestor": "VARCHAR(255)",
+            "requestor_department": "VARCHAR(255)",
+        }
+        for col_name, col_def in material_additions.items():
+            if col_name not in existing_columns.get("materials", set()):
+                conn.execute(text(f'ALTER TABLE materials ADD COLUMN "{col_name}" {col_def}'))
+                print(f"✅ Added column materials.{col_name}")
 
         # --- USERS table additions ---
         if is_sqlite:

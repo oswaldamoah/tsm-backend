@@ -23,6 +23,8 @@ import hashlib
 import sys
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import or_
+
 from database import SessionLocal
 
 BACKFILL_KEY = "backfill:materials-requesters-activity-dates:v1"
@@ -94,9 +96,13 @@ def replan_open_activities(db, now: datetime) -> dict:
     from models import Activity
 
     counts = {"overdue": 0, "due_soon": 0, "upcoming": 0}
+    # Older rows can hold NULL instead of false; treat NULL as "no".
     open_activities = (
         db.query(Activity)
-        .filter(Activity.completed == False, Activity.is_archived == False)  # noqa: E712
+        .filter(
+            or_(Activity.completed == False, Activity.completed.is_(None)),  # noqa: E712
+            or_(Activity.is_archived == False, Activity.is_archived.is_(None)),  # noqa: E712
+        )
         .all()
     )
     for a in open_activities:

@@ -159,7 +159,7 @@ def migrate_schema():
         }
         for col_name, col_def in material_additions.items():
             if col_name not in existing_columns.get("materials", set()):
-                conn.execute(text(f'ALTER TABLE materials ADD COLUMN "{col_name}" {col_def}'))
+                conn.execute(text(f'ALTER TABLE materials ADD COLUMN {"" if is_sqlite else "IF NOT EXISTS "}"{col_name}" {col_def}'))
                 print(f"✅ Added column materials.{col_name}")
 
         # --- USERS table additions ---
@@ -209,10 +209,34 @@ def ensure_indexes():
                 print(f"[WARN] Could not create index {name}: {e}")
 
 
-def init_db():
-    """Create all tables and run migrations."""
+# Any fixed number; workers use it to take turns running start-up setup.
+_INIT_LOCK_ID = 727274
+
+
+def _init_schema():
     import models  # noqa: F401 - ensures models are registered with Base
     Base.metadata.create_all(bind=engine)
     migrate_schema()
     ensure_indexes()
+
+
+def init_db():
+    """Create all tables and run migrations.
+
+    Gunicorn starts several workers at once and each runs this. Without
+    coordination two workers race to create the same table or column,
+    Postgres rejects the second, that worker crashes, and the whole deploy
+    fails. A Postgres advisory lock makes them take turns: the first does
+    the work, the rest find everything already in place.
+    """
+    if IS_SQLITE:
+        _init_schema()
+    else:
+        with engine.connect() as lock_conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:id)"), {"id": _INIT_LOCK_ID})
+            try:
+                _init_schema()
+            finally:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": _INIT_LOCK_ID})
+                lock_conn.commit()
     print("[OK] Database initialized (tables + migrations complete)")

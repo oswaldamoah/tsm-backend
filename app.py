@@ -71,12 +71,15 @@ app = FastAPI(title="Telecom Site Backend", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://vercel.app", 
+        "http://localhost:3000"  # Good for local development testing
+    ],
     # NOTE: must be False when using wildcard origins - per fetch spec browsers
     # reject `Access-Control-Allow-Origin: *` on credentialed requests, which
     # surfaces as "No 'Access-Control-Allow-Origin' header" console errors.
     # We use Bearer tokens (not cookies), so credentials are not needed.
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

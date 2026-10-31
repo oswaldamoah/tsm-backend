@@ -72,6 +72,7 @@ app = FastAPI(title="Telecom Site Backend", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://tsm-live.vercel.app",
         "https://vercel.app", 
         "http://localhost:3000"  # Good for local development testing
     ],
